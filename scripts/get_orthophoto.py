@@ -24,10 +24,10 @@ from geocode import Geocoder
 def geocode_address(address: str) -> Tuple[float, float]:
     """
     Convenience function for geocoding.
-    
+
     Args:
         address: Street address
-        
+
     Returns:
         Tuple of (latitude, longitude)
     """
