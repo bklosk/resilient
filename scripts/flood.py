@@ -115,7 +115,7 @@ def create_colored_voxel_grid(original_voxel_grid, water_voxels, vox_sz, min_xyz
     colored_voxel_grid = o3d.geometry.VoxelGrid()
     colored_voxel_grid.voxel_size = vox_sz
     colored_voxel_grid.origin = min_xyz
-    
+
     # Add all original voxels with their colors
     for voxel in original_voxel_grid.get_voxels():
         new_voxel = o3d.geometry.Voxel()
