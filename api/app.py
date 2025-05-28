@@ -15,9 +15,13 @@ import os
 import sys
 import logging
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import tempfile
 import shutil
+import uuid
+import asyncio
+from datetime import datetime
+from enum import Enum
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse
@@ -53,6 +57,32 @@ app = FastAPI(
 )
 
 
+class JobStatus(str, Enum):
+    """Job status enumeration."""
+
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class Job(BaseModel):
+    """Job tracking model."""
+
+    job_id: str
+    address: str
+    status: JobStatus
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+    output_file: Optional[str] = None
+    error_message: Optional[str] = None
+    metadata: Dict[str, Any] = {}
+
+
+# In-memory job storage (in production, use Redis or a database)
+jobs: Dict[str, Job] = {}
+
+
 class ProcessRequest(BaseModel):
     """Request model for point cloud processing."""
 
@@ -74,8 +104,22 @@ class ProcessResponse(BaseModel):
 
     success: bool
     message: str
-    output_file: str = None
-    metadata: Dict[str, Any] = None
+    job_id: str
+    status: JobStatus
+    metadata: Dict[str, Any] = {}
+
+
+class JobStatusResponse(BaseModel):
+    """Response model for job status queries."""
+
+    job_id: str
+    status: JobStatus
+    address: str
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+    output_file: Optional[str] = None
+    error_message: Optional[str] = None
+    metadata: Dict[str, Any] = {}
 
 
 @app.get("/")
@@ -84,36 +128,94 @@ async def health_check():
     return {"status": "healthy", "service": "photogrammetry-api", "version": "1.0.0"}
 
 
+async def process_point_cloud_background(job_id: str, address: str, buffer_km: float):
+    """
+    Background task to process point cloud.
+
+    Args:
+        job_id: Unique job identifier
+        address: Address to process
+        buffer_km: Buffer distance in kilometers
+    """
+    try:
+        # Update job status to processing
+        if job_id in jobs:
+            jobs[job_id].status = JobStatus.PROCESSING
+
+        logger.info(f"Starting background processing for job {job_id}")
+
+        # Create a temporary working directory for this request
+        temp_dir = Path(tempfile.mkdtemp(prefix=f"photogrammetry_{job_id}_"))
+
+        # Initialize the colorizer with the temporary directory
+        colorizer = PointCloudColorizer(output_dir=str(temp_dir))
+
+        # Process the point cloud (this is the time-consuming part)
+        output_path = colorizer.process_from_address(address)
+
+        # Move the output file to a permanent location
+        output_dir = Path(__file__).parent.parent / "data" / "outputs"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        output_filename = f"colorized_{job_id}.laz"
+        final_output_path = output_dir / output_filename
+
+        shutil.copy2(output_path, final_output_path)
+
+        # Update job with completion info
+        if job_id in jobs:
+            jobs[job_id].status = JobStatus.COMPLETED
+            jobs[job_id].completed_at = datetime.now()
+            jobs[job_id].output_file = str(final_output_path)
+            jobs[job_id].metadata.update(
+                {
+                    "output_file_size_mb": final_output_path.stat().st_size
+                    / (1024 * 1024),
+                    "processing_completed_at": datetime.now().isoformat(),
+                }
+            )
+
+        # Clean up temporary directory
+        cleanup_temp_dir(temp_dir)
+
+        logger.info(f"Successfully completed background processing for job {job_id}")
+
+    except Exception as e:
+        logger.error(f"Error in background processing for job {job_id}: {e}")
+
+        # Update job with error info
+        if job_id in jobs:
+            jobs[job_id].status = JobStatus.FAILED
+            jobs[job_id].error_message = str(e)
+            jobs[job_id].completed_at = datetime.now()
+
+
 @app.post("/process", response_model=ProcessResponse)
 async def process_point_cloud(
     request: ProcessRequest, background_tasks: BackgroundTasks
 ):
     """
-    Generate a colorized point cloud from an address.
+    Initiate colorized point cloud generation from an address.
 
     This endpoint:
     1. Geocodes the provided address
-    2. Searches for LiDAR point cloud data
-    3. Downloads orthophoto imagery
-    4. Colorizes the point cloud using the orthophoto
-    5. Returns the path to the colorized point cloud file
+    2. Searches for LiDAR point cloud data availability
+    3. Returns immediately with a job ID for tracking
+    4. Processes the point cloud in the background
 
     Args:
         request: ProcessRequest containing the address and optional parameters
-        background_tasks: FastAPI background tasks for cleanup
+        background_tasks: FastAPI background tasks for processing
 
     Returns:
-        ProcessResponse with success status and file information
+        ProcessResponse with job ID and initial status
     """
     logger.info(f"Processing request for address: {request.address}")
 
-    # Create a temporary working directory for this request
-    temp_dir = Path(tempfile.mkdtemp(prefix="photogrammetry_"))
+    # Generate unique job ID
+    job_id = str(uuid.uuid4())
 
     try:
-        # Initialize the colorizer with the temporary directory
-        colorizer = PointCloudColorizer(output_dir=str(temp_dir))
-
         # Validate that the address can be geocoded first
         try:
             geocoder = Geocoder()
@@ -155,78 +257,127 @@ async def process_point_cloud(
                 status_code=500, detail=f"Error checking data availability: {str(e)}"
             )
 
-        # Process the point cloud
-        try:
-            output_path = colorizer.process_from_address(request.address)
-
-            # Move the output file to a permanent location
-            output_dir = Path(__file__).parent.parent / "data" / "outputs"
-            output_dir.mkdir(parents=True, exist_ok=True)
-
-            output_filename = f"colorized_{hash(request.address) % 10000:04d}.laz"
-            final_output_path = output_dir / output_filename
-
-            shutil.copy2(output_path, final_output_path)
-
-            # Prepare metadata
-            metadata = {
-                "address": request.address,
+        # Create job entry
+        job = Job(
+            job_id=job_id,
+            address=request.address,
+            status=JobStatus.PENDING,
+            created_at=datetime.now(),
+            metadata={
                 "coordinates": {"latitude": lat, "longitude": lon},
                 "buffer_km": request.buffer_km,
-                "output_file_size_mb": final_output_path.stat().st_size / (1024 * 1024),
                 "lidar_products_found": len(laz_products),
-            }
+            },
+        )
+        jobs[job_id] = job
 
-            # Schedule cleanup of temporary directory
-            background_tasks.add_task(cleanup_temp_dir, temp_dir)
+        # Start background processing
+        background_tasks.add_task(
+            process_point_cloud_background, job_id, request.address, request.buffer_km
+        )
 
-            logger.info(f"Successfully processed point cloud: {final_output_path}")
+        logger.info(f"Started background processing for job {job_id}")
 
-            return ProcessResponse(
-                success=True,
-                message=f"Successfully generated colorized point cloud for {request.address}",
-                output_file=str(final_output_path),
-                metadata=metadata,
-            )
-
-        except Exception as e:
-            logger.error(f"Error processing point cloud: {e}")
-            raise HTTPException(
-                status_code=500, detail=f"Error processing point cloud: {str(e)}"
-            )
+        # Return immediately with job information
+        return ProcessResponse(
+            success=True,
+            message=f"Processing started for {request.address}. Use job ID to check status.",
+            job_id=job_id,
+            status=JobStatus.PENDING,
+            metadata=job.metadata,
+        )
 
     except HTTPException:
-        # Re-raise HTTP exceptions as-is
-        background_tasks.add_task(cleanup_temp_dir, temp_dir)
         raise
     except Exception as e:
-        # Handle unexpected errors
         logger.error(f"Unexpected error: {e}")
-        background_tasks.add_task(cleanup_temp_dir, temp_dir)
         raise HTTPException(
             status_code=500, detail=f"Unexpected error occurred: {str(e)}"
         )
 
 
-@app.get("/download/{filename}")
-async def download_file(filename: str):
+@app.get("/job/{job_id}", response_model=JobStatusResponse)
+async def get_job_status(job_id: str):
     """
-    Download a processed point cloud file.
+    Get the status of a processing job.
 
     Args:
-        filename: Name of the file to download
+        job_id: The job ID returned from the /process endpoint
+
+    Returns:
+        JobStatusResponse with current job status and details
+    """
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job = jobs[job_id]
+
+    return JobStatusResponse(
+        job_id=job.job_id,
+        status=job.status,
+        address=job.address,
+        created_at=job.created_at,
+        completed_at=job.completed_at,
+        output_file=job.output_file,
+        error_message=job.error_message,
+        metadata=job.metadata,
+    )
+
+
+@app.get("/jobs")
+async def list_jobs():
+    """
+    List all jobs (for debugging/monitoring).
+
+    Returns:
+        List of all jobs with their current status
+    """
+    return [
+        {
+            "job_id": job.job_id,
+            "address": job.address,
+            "status": job.status,
+            "created_at": job.created_at,
+            "completed_at": job.completed_at,
+        }
+        for job in jobs.values()
+    ]
+
+
+@app.get("/download/{job_id}")
+async def download_file(job_id: str):
+    """
+    Download a processed point cloud file by job ID.
+
+    Args:
+        job_id: Job ID of the completed processing task
 
     Returns:
         FileResponse with the requested file
     """
-    output_dir = Path(__file__).parent.parent / "data" / "outputs"
-    file_path = output_dir / filename
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job = jobs[job_id]
+
+    if job.status != JobStatus.COMPLETED:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job is not completed. Current status: {job.status}",
+        )
+
+    if not job.output_file:
+        raise HTTPException(status_code=404, detail="Output file not found")
+
+    file_path = Path(job.output_file)
 
     if not file_path.exists():
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail="File not found on disk")
 
     return FileResponse(
-        path=str(file_path), filename=filename, media_type="application/octet-stream"
+        path=str(file_path),
+        filename=f"colorized_{job_id}.laz",
+        media_type="application/octet-stream",
     )
 
 
