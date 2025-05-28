@@ -78,7 +78,7 @@ class ProcessResponse(BaseModel):
     metadata: Dict[str, Any] = None
 
 
-@app.get("/health")
+@app.get("/")
 async def health_check():
     """Health check endpoint."""
     return {"status": "healthy", "service": "photogrammetry-api", "version": "1.0.0"}

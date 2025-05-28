@@ -27,6 +27,7 @@ import logging
 from pathlib import Path
 from typing import Tuple, Optional, Dict, Any
 import warnings
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -574,9 +575,88 @@ class PointCloudColorizer:
         file_size = output_path.stat().st_size / (1024 * 1024)  # MB
         logger.info(f"Saved colorized point cloud ({file_size:.1f} MB)")
 
+    def _fetch_point_cloud_data(
+        self, pc_fetcher: "PointCloudFetcher", lat: float, lon: float
+    ) -> str:
+        """
+        Fetch point cloud data for given coordinates.
+
+        Args:
+            pc_fetcher: Point cloud fetcher instance
+            lat: Latitude
+            lon: Longitude
+
+        Returns:
+            Path to downloaded point cloud file
+        """
+        logger.info("Fetching point cloud data...")
+
+        # Generate bounding box for point cloud search
+        bbox = pc_fetcher.generate_bounding_box(lat, lon, buffer_km=1.0)
+
+        # Search for point cloud data
+        logger.info("Searching for LiDAR data...")
+        products = pc_fetcher.search_lidar_products(bbox)
+
+        if not products:
+            raise RuntimeError("No LiDAR data found for this location")
+
+        laz_products = pc_fetcher.filter_laz_products(products)
+
+        if not laz_products:
+            raise RuntimeError("No LAZ format LiDAR data found")
+
+        # Download point cloud
+        downloaded_pc = pc_fetcher.download_point_cloud(
+            laz_products[0], str(self.output_dir)
+        )
+
+        if not downloaded_pc:
+            raise RuntimeError("Failed to download point cloud")
+
+        logger.info(f"Point cloud downloaded: {downloaded_pc}")
+        return downloaded_pc
+
+    def _fetch_orthophoto_data(
+        self, ortho_fetcher: "NAIPFetcher", address: str, lat: float, lon: float
+    ) -> str:
+        """
+        Fetch orthophoto data for given address/coordinates.
+
+        Args:
+            ortho_fetcher: Orthophoto fetcher instance
+            address: Street address (fallback)
+            lat: Latitude
+            lon: Longitude
+
+        Returns:
+            Path to downloaded orthophoto file
+        """
+        logger.info("Fetching orthophoto data...")
+
+        try:
+            # Try fetching orthophoto using coordinates
+            ortho_url, ortho_metadata = ortho_fetcher.get_orthophoto_for_address(
+                address, str(self.output_dir), download=True
+            )
+
+            # Find the downloaded orthophoto file
+            ortho_files = list(self.output_dir.glob("naip_orthophoto_*.tif"))
+            if not ortho_files:
+                raise RuntimeError("Orthophoto download failed")
+
+            ortho_path = ortho_files[0]
+            logger.info(f"Orthophoto downloaded: {ortho_path}")
+            return str(ortho_path)
+
+        except Exception as e:
+            logger.error(f"Failed to fetch orthophoto: {e}")
+            raise
+
     def process_from_address(self, address: str) -> str:
         """
         Complete workflow: fetch data and colorize point cloud for an address.
+        Point cloud and orthophoto are fetched in parallel for improved performance.
 
         Args:
             address: Street address
@@ -596,116 +676,40 @@ class PointCloudColorizer:
             lat, lon = geocoder.geocode_address(address)
             logger.info(f"Coordinates: {lat:.6f}, {lon:.6f}")
 
-            # Generate bounding box for point cloud search
-            bbox = pc_fetcher.generate_bounding_box(lat, lon, buffer_km=1.0)
+            # Fetch point cloud and orthophoto in parallel
+            logger.info("Starting parallel fetch of point cloud and orthophoto...")
 
-            # Search for point cloud data
-            logger.info("Searching for LiDAR data...")
-            products = pc_fetcher.search_lidar_products(bbox)
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                # Submit both tasks
+                pc_future = executor.submit(
+                    self._fetch_point_cloud_data, pc_fetcher, lat, lon
+                )
+                ortho_future = executor.submit(
+                    self._fetch_orthophoto_data, ortho_fetcher, address, lat, lon
+                )
 
-            if not products:
-                raise RuntimeError("No LiDAR data found for this location")
+                # Wait for both to complete and handle results
+                downloaded_pc = None
+                ortho_path = None
 
-            laz_products = pc_fetcher.filter_laz_products(products)
-
-            if not laz_products:
-                raise RuntimeError("No LAZ format LiDAR data found")
-
-            # Download point cloud
-            pc_output_path = self.output_dir / "point_cloud.laz"
-            downloaded_pc = pc_fetcher.download_point_cloud(
-                laz_products[0], str(self.output_dir)
-            )
+                for future in as_completed([pc_future, ortho_future]):
+                    try:
+                        if future == pc_future:
+                            downloaded_pc = future.result()
+                            logger.info("Point cloud fetch completed")
+                        elif future == ortho_future:
+                            ortho_path = future.result()
+                            logger.info("Orthophoto fetch completed")
+                    except Exception as e:
+                        logger.error(f"Parallel fetch failed: {e}")
+                        raise
 
             if not downloaded_pc:
                 raise RuntimeError("Failed to download point cloud")
+            if not ortho_path:
+                raise RuntimeError("Failed to download orthophoto")
 
-            # Load the point cloud to get its actual bounds
-            logger.info("Analyzing downloaded point cloud bounds...")
-            las_data = self.load_point_cloud(downloaded_pc)
-
-            # Get point cloud bounds in geographic coordinates
-            pc_crs = self.detect_point_cloud_crs(las_data)
-            if pc_crs:
-                try:
-                    # Transform point cloud bounds to lat/lon for orthophoto search
-                    from pyproj import Transformer
-
-                    transformer = Transformer.from_crs(
-                        pc_crs, "EPSG:4326", always_xy=True
-                    )
-
-                    # Get corner coordinates
-                    x_min, x_max = np.min(las_data.x), np.max(las_data.x)
-                    y_min, y_max = np.min(las_data.y), np.max(las_data.y)
-
-                    # Transform corners to lat/lon
-                    lon_min, lat_min = transformer.transform(x_min, y_min)
-                    lon_max, lat_max = transformer.transform(x_max, y_max)
-
-                    # Use center of point cloud for orthophoto search
-                    center_lat = (lat_min + lat_max) / 2
-                    center_lon = (lon_min + lon_max) / 2
-
-                    logger.info(
-                        f"Using point cloud center: {center_lat:.6f}, {center_lon:.6f}"
-                    )
-
-                    # Create a temporary address-like string for the center point
-                    temp_address = f"{center_lat:.6f}, {center_lon:.6f}"
-
-                    # Get orthophoto using point cloud center coordinates
-                    logger.info("Fetching orthophoto for point cloud area...")
-
-                    # Directly use the search method with center coordinates
-                    items = ortho_fetcher.search_naip_items(center_lat, center_lon)
-                    if items:
-                        best_item = ortho_fetcher.get_best_item(items)
-                        if best_item:
-                            metadata = ortho_fetcher.extract_metadata(best_item)
-                            download_url = ortho_fetcher.get_download_url(best_item)
-
-                            # Save metadata
-                            ortho_fetcher.save_metadata(metadata, str(self.output_dir))
-
-                            # Download image
-                            filename = (
-                                f"naip_orthophoto_{metadata.get('id', 'unknown')}.tif"
-                            )
-                            output_path = str(self.output_dir / filename)
-                            ortho_fetcher.download_orthophoto(download_url, output_path)
-
-                            logger.info(f"Orthophoto matched to point cloud area")
-                        else:
-                            raise Exception(
-                                "No suitable NAIP item found for point cloud area"
-                            )
-                    else:
-                        raise Exception("No NAIP imagery found for point cloud area")
-
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to use point cloud bounds for orthophoto search: {e}"
-                    )
-                    logger.info("Falling back to original address-based search...")
-                    ortho_url, ortho_metadata = (
-                        ortho_fetcher.get_orthophoto_for_address(
-                            address, str(self.output_dir), download=True
-                        )
-                    )
-            else:
-                # Fallback to address-based search
-                logger.info("Fetching orthophoto...")
-                ortho_url, ortho_metadata = ortho_fetcher.get_orthophoto_for_address(
-                    address, str(self.output_dir), download=True
-                )
-
-            # Find the downloaded orthophoto file
-            ortho_files = list(self.output_dir.glob("naip_orthophoto_*.tif"))
-            if not ortho_files:
-                raise RuntimeError("Orthophoto download failed")
-
-            ortho_path = ortho_files[0]
+            logger.info("Both datasets fetched successfully, starting processing...")
 
             # Process the data
             return self.process_files(str(downloaded_pc), str(ortho_path))
