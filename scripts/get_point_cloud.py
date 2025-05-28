@@ -17,56 +17,15 @@ import os
 import math
 from typing import Tuple, List, Dict, Optional
 import requests
-from geopy.geocoders import Nominatim
-from geopy.exc import GeocoderTimedOut, GeocoderServiceError
-import time
+from geocode import Geocoder
 
 
 class PointCloudFetcher:
-    """Class to handle address geocoding and LiDAR data fetching."""
+    """Class to handle LiDAR data fetching."""
 
-    def __init__(self, user_agent: str = "point_cloud_fetcher"):
-        """Initialize the fetcher with a geocoder."""
-        self.geolocator = Nominatim(user_agent=user_agent)
+    def __init__(self):
+        """Initialize the fetcher."""
         self.api_base_url = "https://tnmaccess.nationalmap.gov/api/v1/products"
-
-    def geocode_address(
-        self, address: str, max_retries: int = 3
-    ) -> Tuple[float, float]:
-        """
-        Convert an address to latitude and longitude coordinates.
-
-        Args:
-            address: The address string to geocode
-            max_retries: Maximum number of retry attempts
-
-        Returns:
-            Tuple of (latitude, longitude) in decimal degrees
-
-        Raises:
-            Exception: If geocoding fails after all retries
-        """
-        for attempt in range(max_retries):
-            try:
-                print(f"Geocoding address: {address}")
-                location = self.geolocator.geocode(address, timeout=10)
-
-                if location is None:
-                    raise Exception(f"Could not geocode address: {address}")
-
-                lat, lon = location.latitude, location.longitude
-                print(f"Successfully geocoded to: {lat:.6f}, {lon:.6f}")
-                return lat, lon
-
-            except GeocoderTimedOut:
-                print(f"Geocoding timeout, attempt {attempt + 1}/{max_retries}")
-                if attempt < max_retries - 1:
-                    time.sleep(2)  # Wait before retry
-                else:
-                    raise Exception("Geocoding failed after multiple timeout attempts")
-
-            except GeocoderServiceError as e:
-                raise Exception(f"Geocoding service error: {e}")
 
     def generate_bounding_box(
         self, lat: float, lon: float, buffer_km: float = 1.0
@@ -262,11 +221,14 @@ def main():
     args = parser.parse_args()
 
     try:
+        # Initialize the geocoder
+        geocoder = Geocoder()
+
         # Initialize the fetcher
         fetcher = PointCloudFetcher()
 
         # Geocode the address
-        lat, lon = fetcher.geocode_address(args.address)
+        lat, lon = geocoder.geocode_address(args.address)
 
         # Generate bounding box
         bbox = fetcher.generate_bounding_box(lat, lon, args.buffer)
