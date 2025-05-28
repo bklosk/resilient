@@ -14,10 +14,25 @@ Usage:
 
 import json
 import os
+import sys
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 import requests
-from geocode import geocode_address
+from geocode import Geocoder
+
+
+def geocode_address(address: str) -> Tuple[float, float]:
+    """
+    Convenience function for geocoding.
+    
+    Args:
+        address: Street address
+        
+    Returns:
+        Tuple of (latitude, longitude)
+    """
+    geocoder = Geocoder()
+    return geocoder.geocode_address(address)
 
 
 class NAIPFetcher:
@@ -213,7 +228,8 @@ class NAIPFetcher:
 
             with open(output_path, "wb") as f:
                 for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
+                    if chunk:
+                        f.write(chunk)
 
             print(f"Successfully downloaded orthophoto to: {output_path}")
 
