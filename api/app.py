@@ -128,7 +128,7 @@ async def health_check():
     return {"status": "healthy", "service": "photogrammetry-api", "version": "1.0.0"}
 
 
-async def process_point_cloud_background(job_id: str, address: str, buffer_km: float):
+def process_point_cloud_background(job_id: str, address: str, buffer_km: float):
     """
     Background task to process point cloud.
 
@@ -144,10 +144,83 @@ async def process_point_cloud_background(job_id: str, address: str, buffer_km: f
 
         logger.info(f"Starting background processing for job {job_id}")
 
-        # Create a temporary working directory for this request
+        # Step 1: Geocode the address
+        try:
+            geocoder = Geocoder()
+            lat, lon = geocoder.geocode_address(address)
+            logger.info(f"Address geocoded to: {lat:.6f}, {lon:.6f}")
+
+            # Update job metadata with coordinates
+            if job_id in jobs:
+                jobs[job_id].metadata.update(
+                    {
+                        "coordinates": {"latitude": lat, "longitude": lon},
+                        "processing_step": "geocoded",
+                    }
+                )
+        except Exception as e:
+            error_msg = f"Failed to geocode address '{address}': {str(e)}"
+            logger.error(error_msg)
+            if job_id in jobs:
+                jobs[job_id].status = JobStatus.FAILED
+                jobs[job_id].error_message = error_msg
+                jobs[job_id].completed_at = datetime.now()
+            return
+
+        # Step 2: Check for LiDAR data availability
+        try:
+            pc_fetcher = PointCloudFetcher()
+            bbox = pc_fetcher.generate_bounding_box(lat, lon, buffer_km)
+            products = pc_fetcher.search_lidar_products(bbox)
+
+            if not products:
+                error_msg = f"No LiDAR data found for location: {address}"
+                logger.error(error_msg)
+                if job_id in jobs:
+                    jobs[job_id].status = JobStatus.FAILED
+                    jobs[job_id].error_message = error_msg
+                    jobs[job_id].completed_at = datetime.now()
+                return
+
+            laz_products = pc_fetcher.filter_laz_products(products)
+            if not laz_products:
+                error_msg = f"No LAZ format LiDAR data found for location: {address}"
+                logger.error(error_msg)
+                if job_id in jobs:
+                    jobs[job_id].status = JobStatus.FAILED
+                    jobs[job_id].error_message = error_msg
+                    jobs[job_id].completed_at = datetime.now()
+                return
+
+            logger.info(f"Found {len(laz_products)} LAZ products for processing")
+
+            # Update job metadata with LiDAR info
+            if job_id in jobs:
+                jobs[job_id].metadata.update(
+                    {
+                        "lidar_products_found": len(laz_products),
+                        "processing_step": "lidar_data_found",
+                    }
+                )
+
+        except Exception as e:
+            error_msg = f"Error checking LiDAR data availability: {str(e)}"
+            logger.error(error_msg)
+            if job_id in jobs:
+                jobs[job_id].status = JobStatus.FAILED
+                jobs[job_id].error_message = error_msg
+                jobs[job_id].completed_at = datetime.now()
+            return
+
+        # Step 3: Create a temporary working directory for this request
         temp_dir = Path(tempfile.mkdtemp(prefix=f"photogrammetry_{job_id}_"))
 
-        # Initialize the colorizer with the temporary directory
+        # Step 4: Initialize the colorizer and process
+        if job_id in jobs:
+            jobs[job_id].metadata.update(
+                {"processing_step": "downloading_and_processing"}
+            )
+
         colorizer = PointCloudColorizer(output_dir=str(temp_dir))
 
         # Process the point cloud (this is the time-consuming part)
@@ -172,6 +245,7 @@ async def process_point_cloud_background(job_id: str, address: str, buffer_km: f
                     "output_file_size_mb": final_output_path.stat().st_size
                     / (1024 * 1024),
                     "processing_completed_at": datetime.now().isoformat(),
+                    "processing_step": "completed",
                 }
             )
 
@@ -197,11 +271,8 @@ async def process_point_cloud(
     """
     Initiate colorized point cloud generation from an address.
 
-    This endpoint:
-    1. Geocodes the provided address
-    2. Searches for LiDAR point cloud data availability
-    3. Returns immediately with a job ID for tracking
-    4. Processes the point cloud in the background
+    This endpoint returns immediately with a job ID for tracking.
+    All processing happens in the background.
 
     Args:
         request: ProcessRequest containing the address and optional parameters
@@ -210,90 +281,40 @@ async def process_point_cloud(
     Returns:
         ProcessResponse with job ID and initial status
     """
-    logger.info(f"Processing request for address: {request.address}")
-
     # Generate unique job ID
     job_id = str(uuid.uuid4())
 
-    try:
-        # Validate that the address can be geocoded first
-        try:
-            geocoder = Geocoder()
-            lat, lon = geocoder.geocode_address(request.address)
-            logger.info(f"Address geocoded to: {lat:.6f}, {lon:.6f}")
-        except Exception as e:
-            logger.error(f"Failed to geocode address: {e}")
-            raise HTTPException(
-                status_code=400,
-                detail=f"Failed to geocode address '{request.address}': {str(e)}",
-            )
+    logger.info(
+        f"Received processing request for address: {request.address}, job_id: {job_id}"
+    )
 
-        # Check for LiDAR data availability before proceeding
-        try:
-            pc_fetcher = PointCloudFetcher()
-            bbox = pc_fetcher.generate_bounding_box(lat, lon, request.buffer_km)
-            products = pc_fetcher.search_lidar_products(bbox)
+    # Create job entry immediately
+    job = Job(
+        job_id=job_id,
+        address=request.address,
+        status=JobStatus.PENDING,
+        created_at=datetime.now(),
+        metadata={
+            "buffer_km": request.buffer_km,
+        },
+    )
+    jobs[job_id] = job
 
-            if not products:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"No LiDAR data found for location: {request.address}",
-                )
+    # Start background processing without waiting
+    background_tasks.add_task(
+        process_point_cloud_background, job_id, request.address, request.buffer_km
+    )
 
-            laz_products = pc_fetcher.filter_laz_products(products)
-            if not laz_products:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"No LAZ format LiDAR data found for location: {request.address}",
-                )
+    logger.info(f"Job {job_id} created and background task started")
 
-            logger.info(f"Found {len(laz_products)} LAZ products for processing")
-
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Error checking LiDAR data availability: {e}")
-            raise HTTPException(
-                status_code=500, detail=f"Error checking data availability: {str(e)}"
-            )
-
-        # Create job entry
-        job = Job(
-            job_id=job_id,
-            address=request.address,
-            status=JobStatus.PENDING,
-            created_at=datetime.now(),
-            metadata={
-                "coordinates": {"latitude": lat, "longitude": lon},
-                "buffer_km": request.buffer_km,
-                "lidar_products_found": len(laz_products),
-            },
-        )
-        jobs[job_id] = job
-
-        # Start background processing
-        background_tasks.add_task(
-            process_point_cloud_background, job_id, request.address, request.buffer_km
-        )
-
-        logger.info(f"Started background processing for job {job_id}")
-
-        # Return immediately with job information
-        return ProcessResponse(
-            success=True,
-            message=f"Processing started for {request.address}. Use job ID to check status.",
-            job_id=job_id,
-            status=JobStatus.PENDING,
-            metadata=job.metadata,
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Unexpected error: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Unexpected error occurred: {str(e)}"
-        )
+    # Return immediately
+    return ProcessResponse(
+        success=True,
+        message=f"Processing started for {request.address}. Use job ID to check status.",
+        job_id=job_id,
+        status=JobStatus.PENDING,
+        metadata=job.metadata,
+    )
 
 
 @app.get("/job/{job_id}", response_model=JobStatusResponse)
