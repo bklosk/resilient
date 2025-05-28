@@ -10,3 +10,5 @@ landlab
 matplotlib
 requests
 geopy
+fastapi
+uvicorn[standard]

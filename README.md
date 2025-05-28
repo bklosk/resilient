@@ -21,12 +21,16 @@ For example, we could:
 
 ## Workflow Overview (Conceptual) 🗺️
 
+```
+[LiDAR Data 🛰️ + Orthophotos 📸] --> [Preprocessing & Colorization 🎨] --> [3D Semantic Segmentation 🤖] --> [Candidate Identification 🎯] --> [Physics Simulation & ML Analysis 🌪️🔥🌊] --> [Mitigation Strategies & Visualization 📊]
+```
+
 1.  **Data Acquisition & Preprocessing:**
-    *   Collect LiDAR scans and orthophotos.
+    *   Collect LiDAR scans 📡 and orthophotos 🖼️.
     *   Align and fuse these datasets.
-    *   Colorize the LiDAR point cloud using orthophoto imagery.
+    *   Colorize the LiDAR point cloud using orthophoto imagery (Implemented in `scripts/pipeline.py`!).
 2.  **3D Semantic Segmentation:**
-    *   Train or use a pre-trained model to classify points in the cloud (e.g., using Open3D-ML).
+    *   Train or use a pre-trained model to classify points in the cloud (e.g., using Open3D-ML) 🧠.
 3.  **Candidate Identification & Analysis:**
     *   Develop algorithms to analyze the segmented point cloud.
     *   Identify "mutable" objects/areas based on their class and properties.
@@ -70,13 +74,16 @@ For example, we could:
     pip install -r requirements.txt
     ```
 
-### Running the Pipeline
+### Running the Pipeline 🚀
 
-The main pipeline script is `scripts/pipeline.py`. This script processes a hardcoded point cloud and visualizes the output.
+The main pipeline script is `scripts/pipeline.py`. This script currently focuses on colorizing a hardcoded point cloud using satellite imagery and saves the processed data.
 
 To run the pipeline:
 
-1.  **Ensure your virtual environment is activated.**
+1.  **Ensure your virtual environment is activated.** ✅
+    ```bash
+    source venv/bin/activate
+    ```
 2.  **Navigate to the `scripts` directory (optional, but paths in the script are relative to its location):**
     ```bash
     cd scripts
@@ -90,8 +97,8 @@ To run the pipeline:
     python scripts/pipeline.py
     ```
 
-A PyVista window should open to display the colorized point cloud. Close the PyVista window to allow the script to terminate.
+The script will process the data and print status messages to the console. Upon completion, it will save the colorized point cloud to a predefined location (e.g., `data/colorized_point_cloud.laz`). No separate visualization window will be opened by this script.
 
 ---
 
-Fighting climate change, one point cloud at a time! ✨
+Fighting climate change, one point cloud at a time! ✨🌍🌳
