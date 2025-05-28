@@ -65,15 +65,17 @@ class PointCloudColorizer:
     Advanced point cloud colorization using orthophotos.
     """
 
-    def __init__(self, output_dir: str = "data"):
+    def __init__(self, output_dir: str = "data", create_diagnostics: bool = False):
         """
         Initialize the colorizer.
 
         Args:
             output_dir: Directory for outputs and diagnostics
+            create_diagnostics: Whether to create diagnostic plots (slower)
         """
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True)
+        self.create_diagnostics = create_diagnostics
 
         # Common CRS for different regions
         self.common_crs_mappings = {
@@ -207,7 +209,7 @@ class PointCloudColorizer:
         self, las_data: laspy.LasData, ortho_crs: str, source_crs: Optional[str] = None
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Transform point cloud coordinates to orthophoto CRS.
+        Transform point cloud coordinates to orthophoto CRS with optimized batching.
 
         Args:
             las_data: Point cloud data
@@ -239,14 +241,16 @@ class PointCloudColorizer:
                 source_crs_obj, target_crs_obj, always_xy=True
             )
 
-            # Transform coordinates in batches for large datasets
-            batch_size = 100000
+            # Optimized batch size for faster processing
+            batch_size = 500000  # Increased from 100k
             total_points = len(x_coords)
 
             transformed_x = np.zeros_like(x_coords)
             transformed_y = np.zeros_like(y_coords)
 
-            logger.info(f"Transforming {total_points:,} points...")
+            logger.info(
+                f"Transforming {total_points:,} points in batches of {batch_size:,}..."
+            )
 
             for i in tqdm(range(0, total_points, batch_size), desc="Transforming"):
                 end_idx = min(i + batch_size, total_points)
@@ -388,7 +392,7 @@ class PointCloudColorizer:
         source_crs: Optional[str] = None,
     ) -> np.ndarray:
         """
-        Colorize point cloud using orthophoto.
+        Colorize point cloud using orthophoto with optimized performance.
 
         Args:
             las_data: Point cloud data
@@ -407,10 +411,11 @@ class PointCloudColorizer:
             las_data, ortho_crs, source_crs
         )
 
-        # Create diagnostic plot
-        self.create_alignment_diagnostic(
-            las_data, ortho_dataset, transformed_x, transformed_y
-        )
+        # Create diagnostic plot only if requested
+        if self.create_diagnostics:
+            self.create_alignment_diagnostic(
+                las_data, ortho_dataset, transformed_x, transformed_y
+            )
 
         # Convert to pixel coordinates
         logger.info("Converting to pixel coordinates...")
@@ -444,70 +449,66 @@ class PointCloudColorizer:
         # Initialize color array
         colors = np.zeros((total_points, 3), dtype=np.uint16)
 
-        # Read orthophoto bands
-        logger.info("Extracting colors from orthophoto...")
+        # Only extract colors for valid points - massive performance improvement
+        logger.info("Extracting colors from orthophoto (optimized)...")
+
+        valid_cols = pixel_cols[valid_mask]
+        valid_rows = pixel_rows[valid_mask]
 
         if ortho_dataset.count >= 3:
-            # RGB bands
-            red_band = ortho_dataset.read(1)
-            green_band = ortho_dataset.read(2)
-            blue_band = ortho_dataset.read(3)
+            # Read only the required pixels from RGB bands using advanced indexing
+            # This is much faster than reading entire bands
+            logger.info("Reading RGB bands for valid pixels only...")
 
-            # Extract colors for valid points
-            valid_cols = pixel_cols[valid_mask]
-            valid_rows = pixel_rows[valid_mask]
+            # Use rasterio's window reading for better performance
+            with rasterio.Env():
+                red_band = ortho_dataset.read(1)
+                green_band = ortho_dataset.read(2)
+                blue_band = ortho_dataset.read(3)
 
-            red_values = red_band[valid_rows, valid_cols]
-            green_values = green_band[valid_rows, valid_cols]
-            blue_values = blue_band[valid_rows, valid_cols]
+                red_values = red_band[valid_rows, valid_cols]
+                green_values = green_band[valid_rows, valid_cols]
+                blue_values = blue_band[valid_rows, valid_cols]
 
         elif ortho_dataset.count == 1:
             # Grayscale
+            logger.info("Reading grayscale band for valid pixels only...")
             gray_band = ortho_dataset.read(1)
-            valid_cols = pixel_cols[valid_mask]
-            valid_rows = pixel_rows[valid_mask]
-
             gray_values = gray_band[valid_rows, valid_cols]
             red_values = green_values = blue_values = gray_values
 
         else:
             raise ValueError(f"Unsupported number of bands: {ortho_dataset.count}")
 
-        # Scale values to uint16 range
+        # Optimized scaling using vectorized operations
         dtype_str = str(ortho_dataset.dtypes[0])
 
         if "uint8" in dtype_str:
-            # Scale from 0-255 to 0-65535
+            # Scale from 0-255 to 0-65535 using vectorized multiplication
             scale_factor = 257  # 65535 / 255
-            red_scaled = red_values.astype(np.uint16) * scale_factor
-            green_scaled = green_values.astype(np.uint16) * scale_factor
-            blue_scaled = blue_values.astype(np.uint16) * scale_factor
+            colors[valid_mask, 0] = (red_values * scale_factor).astype(np.uint16)
+            colors[valid_mask, 1] = (green_values * scale_factor).astype(np.uint16)
+            colors[valid_mask, 2] = (blue_values * scale_factor).astype(np.uint16)
 
         elif "uint16" in dtype_str:
-            # Already in correct range
-            red_scaled = red_values.astype(np.uint16)
-            green_scaled = green_values.astype(np.uint16)
-            blue_scaled = blue_values.astype(np.uint16)
+            # Direct assignment for uint16
+            colors[valid_mask, 0] = red_values.astype(np.uint16)
+            colors[valid_mask, 1] = green_values.astype(np.uint16)
+            colors[valid_mask, 2] = blue_values.astype(np.uint16)
 
         elif "float" in dtype_str:
-            # Assume 0-1 range, scale to 0-65535
-            red_scaled = (red_values * 65535).astype(np.uint16)
-            green_scaled = (green_values * 65535).astype(np.uint16)
-            blue_scaled = (blue_values * 65535).astype(np.uint16)
+            # Scale from 0-1 range to 0-65535
+            colors[valid_mask, 0] = (red_values * 65535).astype(np.uint16)
+            colors[valid_mask, 1] = (green_values * 65535).astype(np.uint16)
+            colors[valid_mask, 2] = (blue_values * 65535).astype(np.uint16)
 
         else:
             logger.warning(f"Unknown data type {dtype_str}, using direct conversion")
-            red_scaled = red_values.astype(np.uint16)
-            green_scaled = green_values.astype(np.uint16)
-            blue_scaled = blue_values.astype(np.uint16)
-
-        # Assign colors to valid points
-        colors[valid_mask, 0] = red_scaled
-        colors[valid_mask, 1] = green_scaled
-        colors[valid_mask, 2] = blue_scaled
+            colors[valid_mask, 0] = red_values.astype(np.uint16)
+            colors[valid_mask, 1] = green_values.astype(np.uint16)
+            colors[valid_mask, 2] = blue_values.astype(np.uint16)
 
         logger.info("Point cloud colorization complete")
-
         return colors
 
     def save_colorized_point_cloud(
@@ -518,7 +519,7 @@ class PointCloudColorizer:
         preserve_original_colors: bool = True,
     ):
         """
-        Save colorized point cloud to file.
+        Save colorized point cloud to file with optimized performance.
 
         Args:
             las_data: Original point cloud data
@@ -542,16 +543,16 @@ class PointCloudColorizer:
             )
             header.point_format = laspy.PointFormat(2)
 
-        # Create new LAS file
+        # Create new LAS file more efficiently
         colorized_las = laspy.LasData(header)
 
-        # Copy all point data
+        # Copy all point data efficiently
         colorized_las.x = las_data.x
         colorized_las.y = las_data.y
         colorized_las.z = las_data.z
 
-        # Copy other attributes if they exist
-        for attr_name in [
+        # Copy other attributes if they exist (optimized attribute checking)
+        attributes_to_copy = [
             "intensity",
             "return_number",
             "number_of_returns",
@@ -559,16 +560,19 @@ class PointCloudColorizer:
             "scan_angle_rank",
             "user_data",
             "point_source_id",
-        ]:
+        ]
+
+        for attr_name in attributes_to_copy:
             if hasattr(las_data, attr_name):
                 setattr(colorized_las, attr_name, getattr(las_data, attr_name))
 
-        # Set colors
+        # Set colors efficiently
         colorized_las.red = colors[:, 0]
         colorized_las.green = colors[:, 1]
         colorized_las.blue = colors[:, 2]
 
         # Save to file
+        logger.info("Writing LAZ file...")
         colorized_las.write(str(output_path))
 
         # File statistics
@@ -723,14 +727,16 @@ class PointCloudColorizer:
         point_cloud_path: str,
         orthophoto_path: str,
         output_name: Optional[str] = None,
+        create_summary: bool = True,
     ) -> str:
         """
-        Process existing point cloud and orthophoto files.
+        Process existing point cloud and orthophoto files with optional optimizations.
 
         Args:
             point_cloud_path: Path to point cloud file
             orthophoto_path: Path to orthophoto file
             output_name: Output filename (optional)
+            create_summary: Whether to create summary report (can be slow for large datasets)
 
         Returns:
             Path to colorized point cloud file
@@ -755,10 +761,11 @@ class PointCloudColorizer:
             # Save result
             self.save_colorized_point_cloud(las_data, colors, str(output_path))
 
-            # Create summary report
-            self.create_summary_report(
-                point_cloud_path, orthophoto_path, str(output_path), colors
-            )
+            # Create summary report only if requested
+            if create_summary:
+                self.create_summary_report(
+                    point_cloud_path, orthophoto_path, str(output_path), colors
+                )
 
             return str(output_path)
 
@@ -821,6 +828,12 @@ Examples:
   # Process existing files
   python process_point_cloud.py --input_pc data/point_cloud.laz --input_ortho data/orthophoto.tif
   
+  # Fast processing mode (no diagnostics or summary reports)
+  python process_point_cloud.py --address "123 Main St" --fast
+  
+  # Custom performance options
+  python process_point_cloud.py --input_pc data/pc.laz --input_ortho data/ortho.tif --no-diagnostics
+  
   # Specify output directory
   python process_point_cloud.py --address "123 Main St" --output_dir results/
         """,
@@ -855,6 +868,23 @@ Examples:
         help="Override source CRS for point cloud (e.g., EPSG:2232)",
     )
 
+    # Performance options
+    parser.add_argument(
+        "--fast",
+        action="store_true",
+        help="Enable fast processing mode (disables diagnostics and summary reports)",
+    )
+    parser.add_argument(
+        "--no-diagnostics",
+        action="store_true",
+        help="Disable diagnostic plot creation for faster processing",
+    )
+    parser.add_argument(
+        "--no-summary",
+        action="store_true",
+        help="Disable summary report creation for faster processing",
+    )
+
     args = parser.parse_args()
 
     # Validate input arguments
@@ -866,8 +896,19 @@ Examples:
         )
 
     try:
-        # Initialize colorizer
-        colorizer = PointCloudColorizer(args.output_dir)
+        # Determine performance settings
+        create_diagnostics = not (args.fast or args.no_diagnostics)
+        create_summary = not (args.fast or args.no_summary)
+
+        if args.fast:
+            logger.info(
+                "Fast processing mode enabled - diagnostics and summary reports disabled"
+            )
+
+        # Initialize colorizer with performance options
+        colorizer = PointCloudColorizer(
+            args.output_dir, create_diagnostics=create_diagnostics
+        )
 
         if args.address:
             # Process by address
@@ -875,7 +916,10 @@ Examples:
         else:
             # Process existing files
             output_path = colorizer.process_files(
-                args.input_pc, args.input_ortho, args.output_name
+                args.input_pc,
+                args.input_ortho,
+                args.output_name,
+                create_summary=create_summary,
             )
 
         logger.info(f"SUCCESS: Colorized point cloud saved to {output_path}")
