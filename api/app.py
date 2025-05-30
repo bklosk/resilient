@@ -1,19 +1,13 @@
 #!/usr/bin/env python3
 """
 FastAPI Application for Photogrammetry Point Cloud Processing
-
-This API provides endpoints to generate colorized point clouds from addresses.
-It orchestrates the existing helper scripts to download LiDAR data and orthophotos,
-then colorizes the point cloud data.
-
-Endpoints:
-- GET /health - Health check endpoint
-- POST /process - Generate colorized point cloud from an address
 """
 
 import os
 import sys
 import logging
+import threading
+import time
 from pathlib import Path
 from typing import Dict, Any, Optional
 import tempfile
@@ -24,8 +18,9 @@ from datetime import datetime
 from enum import Enum
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 
 # Add the scripts directory to the Python path so we can import the modules
 scripts_dir = Path(__file__).parent.parent / "scripts"
@@ -56,6 +51,18 @@ app = FastAPI(
     version="1.0.0",
 )
 
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],  # Next.js dev server
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 class JobStatus(str, Enum):
     """Job status enumeration."""
@@ -79,8 +86,30 @@ class Job(BaseModel):
     metadata: Dict[str, Any] = {}
 
 
-# In-memory job storage (in production, use Redis or a database)
+# Thread-safe job storage with lock
 jobs: Dict[str, Job] = {}
+jobs_lock = threading.Lock()
+
+
+def update_job_status(job_id: str, **updates) -> bool:
+    """Thread-safe job status update."""
+    with jobs_lock:
+        if job_id not in jobs:
+            logger.error(f"Job {job_id} not found in jobs dict")
+            return False
+
+        for key, value in updates.items():
+            if key == "metadata" and isinstance(value, dict):
+                jobs[job_id].metadata.update(value)
+            else:
+                setattr(jobs[job_id], key, value)
+        return True
+
+
+def get_job_safe(job_id: str) -> Optional[Job]:
+    """Thread-safe job retrieval."""
+    with jobs_lock:
+        return jobs.get(job_id)
 
 
 class ProcessRequest(BaseModel):
@@ -90,6 +119,8 @@ class ProcessRequest(BaseModel):
         ...,
         description="Street address to process",
         example="1250 Wildwood Road, Boulder, CO",
+        min_length=5,
+        max_length=200,
     )
     buffer_km: float = Field(
         default=1.0,
@@ -97,6 +128,12 @@ class ProcessRequest(BaseModel):
         ge=0.1,
         le=5.0,
     )
+
+    @validator("address")
+    def validate_address(cls, v):
+        if not v or not v.strip():
+            raise ValueError("Address cannot be empty")
+        return v.strip()
 
 
 class ProcessResponse(BaseModel):
@@ -122,216 +159,406 @@ class JobStatusResponse(BaseModel):
     metadata: Dict[str, Any] = {}
 
 
-@app.get("/")
+@app.get("/health")
 async def health_check():
-    """Health check endpoint."""
-    return {"status": "healthy", "service": "photogrammetry-api", "version": "1.0.0"}
+    """Health check endpoint with dependency verification."""
+    try:
+        # Test imports
+        from process_point_cloud import PointCloudColorizer
+        from geocode import Geocoder
+
+        return {
+            "status": "healthy",
+            "service": "photogrammetry-api",
+            "version": "1.0.0",
+            "dependencies": "ok",
+            "active_jobs": len(jobs),
+        }
+    except ImportError as e:
+        return {
+            "status": "unhealthy",
+            "service": "photogrammetry-api",
+            "version": "1.0.0",
+            "error": f"Missing dependencies: {str(e)}",
+        }
 
 
 def process_point_cloud_background(job_id: str, address: str, buffer_km: float):
-    """
-    Background task to process point cloud.
+    """Background task with enhanced error handling and thread safety."""
+    temp_dir = None
 
-    Args:
-        job_id: Unique job identifier
-        address: Address to process
-        buffer_km: Buffer distance in kilometers
-    """
     try:
         # Update job status to processing
-        if job_id in jobs:
-            jobs[job_id].status = JobStatus.PROCESSING
+        if not update_job_status(
+            job_id,
+            status=JobStatus.PROCESSING,
+            metadata={"processing_step": "starting"},
+        ):
+            return
 
         logger.info(f"Starting background processing for job {job_id}")
 
-        # Step 1: Geocode the address
-        try:
-            geocoder = Geocoder()
-            lat, lon = geocoder.geocode_address(address)
-            logger.info(f"Address geocoded to: {lat:.6f}, {lon:.6f}")
+        # Step 1: Input validation
+        address = address.strip() if address else ""
+        if not address:
+            raise ValueError("Address cannot be empty")
 
-            # Update job metadata with coordinates
-            if job_id in jobs:
-                jobs[job_id].metadata.update(
-                    {
-                        "coordinates": {"latitude": lat, "longitude": lon},
-                        "processing_step": "geocoded",
-                    }
+        if not (0.1 <= buffer_km <= 5.0):
+            raise ValueError(
+                f"Buffer distance must be between 0.1 and 5.0 km, got {buffer_km}"
+            )
+
+        # Step 2: Geocoding with retry logic
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                update_job_status(
+                    job_id,
+                    metadata={"processing_step": "geocoding", "attempt": attempt + 1},
                 )
-        except Exception as e:
-            error_msg = f"Failed to geocode address '{address}': {str(e)}"
-            logger.error(error_msg)
-            if job_id in jobs:
-                jobs[job_id].status = JobStatus.FAILED
-                jobs[job_id].error_message = error_msg
-                jobs[job_id].completed_at = datetime.now()
-            return
 
-        # Step 2: Check for LiDAR data availability
+                geocoder = Geocoder()
+                lat, lon = geocoder.geocode_address(address)
+
+                if lat is None or lon is None:
+                    raise ValueError("Failed to get valid coordinates")
+
+                # Validate coordinates are reasonable
+                if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+                    raise ValueError(f"Invalid coordinates: {lat}, {lon}")
+
+                logger.info(f"Address geocoded to: {lat:.6f}, {lon:.6f}")
+
+                update_job_status(
+                    job_id,
+                    metadata={
+                        "coordinates": {
+                            "latitude": float(lat),
+                            "longitude": float(lon),
+                        },
+                        "processing_step": "geocoded",
+                    },
+                )
+                break
+
+            except Exception as e:
+                if attempt == max_retries - 1:  # Last attempt
+                    error_msg = f"Failed to geocode address '{address}' after {max_retries} attempts: {str(e)}"
+                    logger.error(error_msg)
+                    update_job_status(
+                        job_id,
+                        status=JobStatus.FAILED,
+                        error_message=error_msg,
+                        completed_at=datetime.now(),
+                    )
+                    return
+                else:
+                    logger.warning(
+                        f"Geocoding attempt {attempt + 1} failed: {e}, retrying..."
+                    )
+                    time.sleep(2**attempt)  # Exponential backoff
+
+        # Step 3: LiDAR data search with validation
         try:
+            update_job_status(job_id, metadata={"processing_step": "searching_lidar"})
+
             pc_fetcher = PointCloudFetcher()
             bbox = pc_fetcher.generate_bounding_box(lat, lon, buffer_km)
+
+            # Validate bounding box - handle both string and list formats
+            if not bbox:
+                raise ValueError("No bounding box generated")
+
+            # If bbox is a string, validate it has 4 comma-separated values
+            if isinstance(bbox, str):
+                bbox_parts = bbox.split(",")
+                if len(bbox_parts) != 4:
+                    raise ValueError(
+                        f"Invalid bounding box format - expected 4 values, got {len(bbox_parts)}: {bbox}"
+                    )
+                try:
+                    # Validate all parts are numeric
+                    [float(part.strip()) for part in bbox_parts]
+                except ValueError:
+                    raise ValueError(
+                        f"Invalid bounding box values - non-numeric data: {bbox}"
+                    )
+            # If bbox is a list, validate it has 4 values
+            elif isinstance(bbox, (list, tuple)):
+                if len(bbox) != 4:
+                    raise ValueError(
+                        f"Invalid bounding box format - expected 4 values, got {len(bbox)}: {bbox}"
+                    )
+            else:
+                raise ValueError(
+                    f"Invalid bounding box type - expected string or list, got {type(bbox)}: {bbox}"
+                )
+
+            logger.info(f"Generated valid bounding box: {bbox}")
+
             products = pc_fetcher.search_lidar_products(bbox)
 
             if not products:
-                error_msg = f"No LiDAR data found for location: {address}"
+                error_msg = f"No LiDAR data found for location: {address} (lat: {lat:.6f}, lon: {lon:.6f})"
                 logger.error(error_msg)
-                if job_id in jobs:
-                    jobs[job_id].status = JobStatus.FAILED
-                    jobs[job_id].error_message = error_msg
-                    jobs[job_id].completed_at = datetime.now()
+                update_job_status(
+                    job_id,
+                    status=JobStatus.FAILED,
+                    error_message=error_msg,
+                    completed_at=datetime.now(),
+                )
                 return
 
             laz_products = pc_fetcher.filter_laz_products(products)
             if not laz_products:
                 error_msg = f"No LAZ format LiDAR data found for location: {address}"
                 logger.error(error_msg)
-                if job_id in jobs:
-                    jobs[job_id].status = JobStatus.FAILED
-                    jobs[job_id].error_message = error_msg
-                    jobs[job_id].completed_at = datetime.now()
+                update_job_status(
+                    job_id,
+                    status=JobStatus.FAILED,
+                    error_message=error_msg,
+                    completed_at=datetime.now(),
+                )
                 return
 
             logger.info(f"Found {len(laz_products)} LAZ products for processing")
 
-            # Update job metadata with LiDAR info
-            if job_id in jobs:
-                jobs[job_id].metadata.update(
-                    {
-                        "lidar_products_found": len(laz_products),
-                        "processing_step": "lidar_data_found",
-                    }
-                )
+            update_job_status(
+                job_id,
+                metadata={
+                    "lidar_products_found": len(laz_products),
+                    "processing_step": "lidar_data_found",
+                    "bbox": bbox,
+                },
+            )
 
         except Exception as e:
             error_msg = f"Error checking LiDAR data availability: {str(e)}"
-            logger.error(error_msg)
-            if job_id in jobs:
-                jobs[job_id].status = JobStatus.FAILED
-                jobs[job_id].error_message = error_msg
-                jobs[job_id].completed_at = datetime.now()
+            logger.error(error_msg, exc_info=True)
+            update_job_status(
+                job_id,
+                status=JobStatus.FAILED,
+                error_message=error_msg,
+                completed_at=datetime.now(),
+            )
             return
 
-        # Step 3: Create a temporary working directory for this request
-        temp_dir = Path(tempfile.mkdtemp(prefix=f"photogrammetry_{job_id}_"))
+        # Step 4: Processing with temporary directory
+        try:
+            temp_dir = Path(tempfile.mkdtemp(prefix=f"photogrammetry_{job_id}_"))
+            logger.info(f"Created temporary directory: {temp_dir}")
 
-        # Step 4: Initialize the colorizer and process
-        if job_id in jobs:
-            jobs[job_id].metadata.update(
-                {"processing_step": "downloading_and_processing"}
+            update_job_status(
+                job_id,
+                metadata={
+                    "processing_step": "downloading_and_processing",
+                    "temp_dir": str(temp_dir),
+                },
             )
 
-        colorizer = PointCloudColorizer(output_dir=str(temp_dir))
+            # Initialize colorizer and process with detailed error handling
+            try:
+                colorizer = PointCloudColorizer(output_dir=str(temp_dir))
+                logger.info(f"Initialized PointCloudColorizer for job {job_id}")
 
-        # Process the point cloud (this is the time-consuming part)
-        output_path = colorizer.process_from_address(address)
+                update_job_status(
+                    job_id,
+                    metadata={"processing_step": "starting_point_cloud_processing"},
+                )
 
-        # Move the output file to a permanent location
-        output_dir = Path(__file__).parent.parent / "data" / "outputs"
-        output_dir.mkdir(parents=True, exist_ok=True)
+                output_path = colorizer.process_from_address(address)
 
-        output_filename = f"colorized_{job_id}.laz"
-        final_output_path = output_dir / output_filename
+                if not output_path:
+                    raise ValueError("Point cloud processing returned no output path")
 
-        shutil.copy2(output_path, final_output_path)
+                logger.info(f"Point cloud processing completed, output: {output_path}")
 
-        # Update job with completion info
-        if job_id in jobs:
-            jobs[job_id].status = JobStatus.COMPLETED
-            jobs[job_id].completed_at = datetime.now()
-            jobs[job_id].output_file = str(final_output_path)
-            jobs[job_id].metadata.update(
-                {
-                    "output_file_size_mb": final_output_path.stat().st_size
-                    / (1024 * 1024),
+            except RuntimeError as e:
+                if "Failed to download point cloud" in str(e):
+                    error_msg = f"Point cloud download failed for location: {address}. This could be due to: 1) No LiDAR data available for this area, 2) Network connectivity issues, 3) USGS service unavailable. Original error: {str(e)}"
+                    logger.error(error_msg)
+                    update_job_status(
+                        job_id,
+                        status=JobStatus.FAILED,
+                        error_message=error_msg,
+                        completed_at=datetime.now(),
+                    )
+                    return
+                else:
+                    raise  # Re-raise other RuntimeErrors
+            except Exception as e:
+                error_msg = f"Point cloud processing failed: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                update_job_status(
+                    job_id,
+                    status=JobStatus.FAILED,
+                    error_message=error_msg,
+                    completed_at=datetime.now(),
+                )
+                return
+
+            output_file = Path(output_path)
+            if not output_file.exists():
+                raise ValueError(
+                    f"Point cloud processing failed - output file not found: {output_path}"
+                )
+
+            if output_file.stat().st_size == 0:
+                raise ValueError("Point cloud processing produced empty file")
+
+            # Step 5: Move to permanent location with validation
+            output_dir = Path(__file__).parent.parent / "data" / "outputs"
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            output_filename = f"colorized_{job_id}.laz"
+            final_output_path = output_dir / output_filename
+
+            # Ensure we don't overwrite existing files
+            counter = 1
+            while final_output_path.exists():
+                output_filename = f"colorized_{job_id}_{counter}.laz"
+                final_output_path = output_dir / output_filename
+                counter += 1
+
+            shutil.copy2(output_path, final_output_path)
+
+            if not final_output_path.exists():
+                raise ValueError("Failed to copy output file to final location")
+
+            # Verify file integrity
+            file_size_bytes = final_output_path.stat().st_size
+            if file_size_bytes == 0:
+                raise ValueError("Output file is empty after copy")
+
+            file_size_mb = file_size_bytes / (1024 * 1024)
+
+            # Update job completion
+            update_job_status(
+                job_id,
+                status=JobStatus.COMPLETED,
+                completed_at=datetime.now(),
+                output_file=str(final_output_path),
+                metadata={
+                    "output_file_size_mb": round(file_size_mb, 2),
+                    "output_file_size_bytes": file_size_bytes,
                     "processing_completed_at": datetime.now().isoformat(),
                     "processing_step": "completed",
-                }
+                    "final_filename": output_filename,
+                },
             )
 
-        # Clean up temporary directory
-        cleanup_temp_dir(temp_dir)
+            logger.info(
+                f"Successfully completed processing for job {job_id}, file size: {file_size_mb:.2f} MB"
+            )
 
-        logger.info(f"Successfully completed background processing for job {job_id}")
+        except Exception as e:
+            error_msg = f"Processing error: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            update_job_status(
+                job_id,
+                status=JobStatus.FAILED,
+                error_message=error_msg,
+                completed_at=datetime.now(),
+            )
 
     except Exception as e:
-        logger.error(f"Error in background processing for job {job_id}: {e}")
-
-        # Update job with error info
-        if job_id in jobs:
-            jobs[job_id].status = JobStatus.FAILED
-            jobs[job_id].error_message = str(e)
-            jobs[job_id].completed_at = datetime.now()
+        logger.error(
+            f"Unexpected error in background processing for job {job_id}: {e}",
+            exc_info=True,
+        )
+        update_job_status(
+            job_id,
+            status=JobStatus.FAILED,
+            error_message=f"Unexpected processing error: {str(e)}",
+            completed_at=datetime.now(),
+        )
+    finally:
+        # Always clean up temporary directory
+        if temp_dir:
+            cleanup_temp_dir(temp_dir)
 
 
 @app.post("/process", response_model=ProcessResponse)
 async def process_point_cloud(
     request: ProcessRequest, background_tasks: BackgroundTasks
 ):
-    """
-    Initiate colorized point cloud generation from an address.
+    """Initiate colorized point cloud generation from an address."""
+    try:
+        # Generate unique job ID
+        job_id = str(uuid.uuid4())
 
-    This endpoint returns immediately with a job ID for tracking.
-    All processing happens in the background.
+        logger.info(
+            f"Received processing request for address: '{request.address}', job_id: {job_id}"
+        )
 
-    Args:
-        request: ProcessRequest containing the address and optional parameters
-        background_tasks: FastAPI background tasks for processing
+        # Additional validation
+        address = request.address.strip()
+        if len(address) < 5:
+            raise HTTPException(
+                status_code=400, detail="Address too short (minimum 5 characters)"
+            )
 
-    Returns:
-        ProcessResponse with job ID and initial status
-    """
-    # Generate unique job ID
-    job_id = str(uuid.uuid4())
+        if len(address) > 200:
+            raise HTTPException(
+                status_code=400, detail="Address too long (maximum 200 characters)"
+            )
 
-    logger.info(
-        f"Received processing request for address: {request.address}, job_id: {job_id}"
-    )
+        # Create job entry with thread safety
+        job = Job(
+            job_id=job_id,
+            address=address,
+            status=JobStatus.PENDING,
+            created_at=datetime.now(),
+            metadata={
+                "buffer_km": request.buffer_km,
+                "processing_step": "pending",
+                "created_by": "api",
+                "request_timestamp": datetime.now().isoformat(),
+            },
+        )
 
-    # Create job entry immediately
-    job = Job(
-        job_id=job_id,
-        address=request.address,
-        status=JobStatus.PENDING,
-        created_at=datetime.now(),
-        metadata={
-            "buffer_km": request.buffer_km,
-        },
-    )
-    jobs[job_id] = job
+        with jobs_lock:
+            jobs[job_id] = job
 
-    # Start background processing without waiting
-    background_tasks.add_task(
-        process_point_cloud_background, job_id, request.address, request.buffer_km
-    )
+        # Start background processing
+        background_tasks.add_task(
+            process_point_cloud_background, job_id, address, request.buffer_km
+        )
 
-    logger.info(f"Job {job_id} created and background task started")
+        logger.info(f"Job {job_id} created and background task started")
 
-    # Return immediately
-    return ProcessResponse(
-        success=True,
-        message=f"Processing started for {request.address}. Use job ID to check status.",
-        job_id=job_id,
-        status=JobStatus.PENDING,
-        metadata=job.metadata,
-    )
+        return ProcessResponse(
+            success=True,
+            message=f"Processing started for '{address}'. Use job ID to check status.",
+            job_id=job_id,
+            status=JobStatus.PENDING,
+            metadata=job.metadata,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating processing job: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"Failed to start processing: {str(e)}"
+        )
 
 
 @app.get("/job/{job_id}", response_model=JobStatusResponse)
 async def get_job_status(job_id: str):
-    """
-    Get the status of a processing job.
+    """Get job status with validation."""
+    if not job_id or not job_id.strip():
+        raise HTTPException(status_code=400, detail="Job ID cannot be empty")
 
-    Args:
-        job_id: The job ID returned from the /process endpoint
+    # Validate UUID format
+    try:
+        uuid.UUID(job_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid job ID format")
 
-    Returns:
-        JobStatusResponse with current job status and details
-    """
-    if job_id not in jobs:
+    job = get_job_safe(job_id)
+    if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-
-    job = jobs[job_id]
 
     return JobStatusResponse(
         job_id=job.job_id,
@@ -367,45 +594,79 @@ async def list_jobs():
 
 @app.get("/download/{job_id}")
 async def download_file(job_id: str):
-    """
-    Download a processed point cloud file by job ID.
+    """Download file with enhanced validation."""
+    try:
+        if not job_id or not job_id.strip():
+            raise HTTPException(status_code=400, detail="Job ID cannot be empty")
 
-    Args:
-        job_id: Job ID of the completed processing task
+        # Validate UUID format
+        try:
+            uuid.UUID(job_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid job ID format")
 
-    Returns:
-        FileResponse with the requested file
-    """
-    if job_id not in jobs:
-        raise HTTPException(status_code=404, detail="Job not found")
+        job = get_job_safe(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
 
-    job = jobs[job_id]
+        if job.status == JobStatus.PENDING:
+            raise HTTPException(status_code=202, detail="Job is still pending")
+        elif job.status == JobStatus.PROCESSING:
+            raise HTTPException(status_code=202, detail="Job is still processing")
+        elif job.status == JobStatus.FAILED:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Job failed: {job.error_message or 'Unknown error'}",
+            )
+        elif job.status != JobStatus.COMPLETED:
+            raise HTTPException(
+                status_code=400, detail=f"Job is in unexpected state: {job.status}"
+            )
 
-    if job.status != JobStatus.COMPLETED:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Job is not completed. Current status: {job.status}",
+        if not job.output_file:
+            raise HTTPException(status_code=404, detail="Output file path not found")
+
+        file_path = Path(job.output_file)
+
+        if not file_path.exists():
+            logger.error(f"Output file missing from disk: {file_path}")
+            raise HTTPException(status_code=404, detail="Output file not found on disk")
+
+        if not file_path.is_file():
+            logger.error(f"Output path is not a file: {file_path}")
+            raise HTTPException(
+                status_code=400, detail="Output path is not a valid file"
+            )
+
+        # Security check - ensure file is within expected directory
+        expected_dir = Path(__file__).parent.parent / "data" / "outputs"
+        try:
+            file_path.resolve().relative_to(expected_dir.resolve())
+        except ValueError:
+            logger.error(
+                f"Security violation: file outside expected directory: {file_path}"
+            )
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        filename = job.metadata.get("final_filename", f"colorized_{job_id}.laz")
+
+        return FileResponse(
+            path=str(file_path),
+            filename=filename,
+            media_type="application/octet-stream",
         )
 
-    if not job.output_file:
-        raise HTTPException(status_code=404, detail="Output file not found")
-
-    file_path = Path(job.output_file)
-
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="File not found on disk")
-
-    return FileResponse(
-        path=str(file_path),
-        filename=f"colorized_{job_id}.laz",
-        media_type="application/octet-stream",
-    )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error downloading file for job {job_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 def cleanup_temp_dir(temp_dir: Path):
-    """Clean up temporary directory."""
+    """Clean up temporary directory with error handling."""
     try:
-        if temp_dir.exists():
+        if temp_dir and temp_dir.exists():
             shutil.rmtree(temp_dir)
             logger.info(f"Cleaned up temporary directory: {temp_dir}")
     except Exception as e:

@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Tuple, Optional, Dict, Any
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -583,7 +584,7 @@ class PointCloudColorizer:
         self, pc_fetcher: "PointCloudFetcher", lat: float, lon: float
     ) -> str:
         """
-        Fetch point cloud data for given coordinates.
+        Fetch point cloud data for given coordinates with retry logic.
 
         Args:
             pc_fetcher: Point cloud fetcher instance
@@ -595,31 +596,103 @@ class PointCloudColorizer:
         """
         logger.info("Fetching point cloud data...")
 
-        # Generate bounding box for point cloud search
-        bbox = pc_fetcher.generate_bounding_box(lat, lon, buffer_km=1.0)
+        try:
+            # Generate bounding box for point cloud search
+            bbox = pc_fetcher.generate_bounding_box(lat, lon, buffer_km=1.0)
+            logger.info(f"Search area: {bbox}")
 
-        # Search for point cloud data
-        logger.info("Searching for LiDAR data...")
-        products = pc_fetcher.search_lidar_products(bbox)
+            # Search for point cloud data
+            logger.info("Searching for LiDAR data...")
+            products = pc_fetcher.search_lidar_products(bbox)
 
-        if not products:
-            raise RuntimeError("No LiDAR data found for this location")
+            if not products:
+                logger.error(
+                    f"No LiDAR data found for coordinates {lat:.6f}, {lon:.6f}"
+                )
+                raise RuntimeError(
+                    f"No LiDAR data found for location {lat:.6f}, {lon:.6f}. This area may not have available point cloud data."
+                )
 
-        laz_products = pc_fetcher.filter_laz_products(products)
+            logger.info(f"Found {len(products)} LiDAR products")
 
-        if not laz_products:
-            raise RuntimeError("No LAZ format LiDAR data found")
+            laz_products = pc_fetcher.filter_laz_products(products)
 
-        # Download point cloud
-        downloaded_pc = pc_fetcher.download_point_cloud(
-            laz_products[0], str(self.output_dir)
-        )
+            if not laz_products:
+                logger.error("No LAZ format LiDAR data found")
+                raise RuntimeError(
+                    "No LAZ format LiDAR data found. Only LAZ files are supported for processing."
+                )
 
-        if not downloaded_pc:
-            raise RuntimeError("Failed to download point cloud")
+            logger.info(f"Found {len(laz_products)} LAZ products")
 
-        logger.info(f"Point cloud downloaded: {downloaded_pc}")
-        return downloaded_pc
+            # Try downloading point cloud with retry logic
+            max_retries = 3
+            retry_delay = 5  # seconds
+
+            for attempt in range(max_retries):
+                try:
+                    product_title = laz_products[0].get("title", "Unknown product")
+                    logger.info(
+                        f"Attempting to download (attempt {attempt + 1}/{max_retries}): {product_title}"
+                    )
+
+                    downloaded_pc = pc_fetcher.download_point_cloud(
+                        laz_products[0], str(self.output_dir)
+                    )
+
+                    if downloaded_pc and Path(downloaded_pc).exists():
+                        logger.info(
+                            f"Point cloud downloaded successfully: {downloaded_pc}"
+                        )
+                        return downloaded_pc
+                    else:
+                        logger.warning(
+                            f"Download attempt {attempt + 1} failed - file not created"
+                        )
+
+                except Exception as download_error:
+                    logger.warning(
+                        f"Download attempt {attempt + 1} failed: {str(download_error)}"
+                    )
+
+                    # Check if it's a timeout or connection error
+                    if any(
+                        keyword in str(download_error).lower()
+                        for keyword in [
+                            "timeout",
+                            "connection",
+                            "max retries",
+                            "httpsconnectionpool",
+                        ]
+                    ):
+                        logger.info(
+                            f"Network error detected, will retry in {retry_delay} seconds..."
+                        )
+                        if attempt < max_retries - 1:
+                            time.sleep(retry_delay)
+                            retry_delay *= 2  # Exponential backoff
+                            continue
+
+                    # If it's the last attempt or not a network error, raise
+                    if attempt == max_retries - 1:
+                        raise
+
+            # If we get here, all retries failed
+            raise RuntimeError(
+                f"Failed to download point cloud after {max_retries} attempts. "
+                "The USGS server may be experiencing issues. Please try again later."
+            )
+
+        except Exception as e:
+            logger.error(f"Point cloud fetch failed: {str(e)}")
+            # Re-raise with more context
+            if any(
+                msg in str(e)
+                for msg in ["No LiDAR data found", "No LAZ format", "after", "attempts"]
+            ):
+                raise  # Re-raise our custom error messages as-is
+            else:
+                raise RuntimeError(f"Failed to fetch point cloud data: {str(e)}")
 
     def _fetch_orthophoto_data(
         self, ortho_fetcher: "NAIPFetcher", address: str, lat: float, lon: float
@@ -647,7 +720,7 @@ class PointCloudColorizer:
             # Find the downloaded orthophoto file
             ortho_files = list(self.output_dir.glob("naip_orthophoto_*.tif"))
             if not ortho_files:
-                raise RuntimeError("Orthophoto download failed")
+                raise RuntimeError("Orthophoto download failed - no files found")
 
             ortho_path = ortho_files[0]
             logger.info(f"Orthophoto downloaded: {ortho_path}")
@@ -680,7 +753,7 @@ class PointCloudColorizer:
             lat, lon = geocoder.geocode_address(address)
             logger.info(f"Coordinates: {lat:.6f}, {lon:.6f}")
 
-            # Fetch point cloud and orthophoto in parallel
+            # Fetch point cloud and orthophoto in parallel with timeout
             logger.info("Starting parallel fetch of point cloud and orthophoto...")
 
             with ThreadPoolExecutor(max_workers=2) as executor:
@@ -695,23 +768,51 @@ class PointCloudColorizer:
                 # Wait for both to complete and handle results
                 downloaded_pc = None
                 ortho_path = None
+                pc_error = None
+                ortho_error = None
 
-                for future in as_completed([pc_future, ortho_future]):
+                for future in as_completed(
+                    [pc_future, ortho_future], timeout=300
+                ):  # 5 minute timeout
                     try:
                         if future == pc_future:
                             downloaded_pc = future.result()
-                            logger.info("Point cloud fetch completed")
+                            logger.info("Point cloud fetch completed successfully")
                         elif future == ortho_future:
                             ortho_path = future.result()
-                            logger.info("Orthophoto fetch completed")
+                            logger.info("Orthophoto fetch completed successfully")
                     except Exception as e:
-                        logger.error(f"Parallel fetch failed: {e}")
-                        raise
+                        if future == pc_future:
+                            pc_error = e
+                            logger.error(f"Point cloud fetch failed: {e}")
+                        elif future == ortho_future:
+                            ortho_error = e
+                            logger.error(f"Orthophoto fetch failed: {e}")
+
+            # Check results and provide helpful error messages
+            if pc_error and ortho_error:
+                raise RuntimeError(
+                    f"Both downloads failed. Point cloud: {pc_error}. Orthophoto: {ortho_error}"
+                )
+            elif pc_error:
+                raise RuntimeError(
+                    f"Point cloud download failed: {pc_error}. "
+                    "The orthophoto was downloaded successfully, but point cloud data is required for processing."
+                )
+            elif ortho_error:
+                raise RuntimeError(
+                    f"Orthophoto download failed: {ortho_error}. "
+                    "The point cloud was downloaded successfully, but orthophoto data is required for colorization."
+                )
 
             if not downloaded_pc:
-                raise RuntimeError("Failed to download point cloud")
+                raise RuntimeError(
+                    "Point cloud download completed but no file path was returned"
+                )
             if not ortho_path:
-                raise RuntimeError("Failed to download orthophoto")
+                raise RuntimeError(
+                    "Orthophoto download completed but no file path was returned"
+                )
 
             logger.info("Both datasets fetched successfully, starting processing...")
 
