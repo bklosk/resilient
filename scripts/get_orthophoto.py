@@ -1,174 +1,163 @@
 #!/usr/bin/env python3
 """
-NAIP Orthophoto Fetcher using Microsoft Planetary Computer STAC API
+NAIP Orthophoto Fetcher using USGS NAIPPlus Service
 
 This module fetches NAIP (National Agriculture Imagery Program) orthophotos
-for a given address using the Microsoft Planetary Computer STAC API.
+for a given address using the USGS NAIPPlus ImageServer with clipped exports.
+The bounding box is automatically sized to approximately one acre.
 
 Usage:
     from get_orthophoto import NAIPFetcher
 
     fetcher = NAIPFetcher()
-    orthophoto_url, metadata = fetcher.get_orthophoto_for_address("1250 Wildwood Road, Boulder, CO")
+    output_path, metadata = fetcher.get_orthophoto_for_address("1250 Wildwood Road, Boulder, CO")
 """
 
 import json
 import os
 import sys
+import math
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 import requests
-from utils import GeocodeUtils, BoundingBoxUtils, HTTPUtils, JSONUtils
+from utils import GeocodeUtils, FileUtils
 
 
 class NAIPFetcher:
-    """Class to fetch NAIP orthophotos using Microsoft Planetary Computer STAC API."""
+    """Class to fetch NAIP orthophotos using USGS NAIPPlus ImageServer."""
 
     def __init__(self):
         """Initialize the NAIP fetcher."""
-        self.stac_api_url = "https://planetarycomputer.microsoft.com/api/stac/v1"
-        self.collection = "naip"
+        self.service_url = "https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPPlus/ImageServer/exportImage"
 
-    def search_naip_items(
-        self,
-        latitude: float,
-        longitude: float,
-        bbox_size: float = 0.01,
-        limit: int = 10,
-    ) -> List[Dict]:
+    def calculate_acre_bbox(
+        self, latitude: float, longitude: float
+    ) -> Tuple[float, float, float, float]:
         """
-        Search for NAIP items that intersect with the given coordinates.
+        Calculate a bounding box of approximately one acre around the given coordinates.
 
         Args:
             latitude: Latitude in decimal degrees
             longitude: Longitude in decimal degrees
-            bbox_size: Size of bounding box around the point (degrees)
-            limit: Maximum number of items to return
 
         Returns:
-            List of STAC items matching the search criteria
+            Tuple of (min_lon, min_lat, max_lon, max_lat)
+        """
+        # One acre = 4,047 square meters
+        # For a square area: side length = sqrt(4047) ≈ 63.6 meters
+        # Convert to degrees (rough approximation)
+
+        # Latitude: 1 degree ≈ 111,000 meters
+        lat_degrees = 63.6 / 111000
+
+        # Longitude varies by latitude: 1 degree longitude = cos(lat) * 111,000 meters
+        lon_degrees = 63.6 / (111000 * math.cos(math.radians(latitude)))
+
+        # Create square bounding box
+        min_lat = latitude - lat_degrees / 2
+        max_lat = latitude + lat_degrees / 2
+        min_lon = longitude - lon_degrees / 2
+        max_lon = longitude + lon_degrees / 2
+
+        print(f"Generated ~1 acre bounding box:")
+        print(f"  Center: {latitude:.6f}, {longitude:.6f}")
+        print(f"  Bounds: {min_lon:.6f}, {min_lat:.6f}, {max_lon:.6f}, {max_lat:.6f}")
+        print(
+            f"  Size: ~{lat_degrees*111000:.1f}m x {lon_degrees*111000*math.cos(math.radians(latitude)):.1f}m"
+        )
+
+        return min_lon, min_lat, max_lon, max_lat
+
+    def export_image(
+        self,
+        min_lon: float,
+        min_lat: float,
+        max_lon: float,
+        max_lat: float,
+        output_path: str,
+        image_size: str = "5000,5000",
+    ) -> Dict:
+        """
+        Export a clipped NAIP image from the USGS NAIPPlus service.
+
+        Args:
+            min_lon: Minimum longitude
+            min_lat: Minimum latitude
+            max_lon: Maximum longitude
+            max_lat: Maximum latitude
+            output_path: Path to save the exported image
+            image_size: Image dimensions as "width,height" string
+
+        Returns:
+            Dictionary containing export metadata
 
         Raises:
-            Exception: If the API request fails
+            Exception: If export fails
         """
-        # Create bounding box around the point
-        bbox_utils = BoundingBoxUtils()
-        # Convert bbox_size from degrees to kilometers (rough approximation: 1 degree ≈ 111 km)
-        buffer_km = bbox_size * 111.0
-        bbox_string = bbox_utils.generate_bounding_box(latitude, longitude, buffer_km)
-        # Convert from string format "min_lon,min_lat,max_lon,max_lat" to list format
-        bbox = [float(x) for x in bbox_string.split(",")]
+        bbox = ",".join(map(str, [min_lon, min_lat, max_lon, max_lat]))
 
-        search_params = {
-            "collections": [self.collection],
+        params = {
             "bbox": bbox,
-            "limit": limit,
-            "sortby": [{"field": "datetime", "direction": "desc"}],
+            "bboxSR": 4326,  # WGS84 coordinate system
+            "size": image_size,  # Output image size in pixels
+            "imageSR": 4326,  # Output coordinate system
+            "format": "tiff",  # Output format
+            "f": "image",  # Response format
         }
 
-        print(
-            f"Searching for NAIP imagery at coordinates: {latitude:.6f}, {longitude:.6f}"
-        )
-        print(f"Using bounding box: {bbox}")
+        print(f"Exporting NAIP image:")
+        print(f"  Bounding box: {bbox}")
+        print(f"  Image size: {image_size}")
+        print(f"  Output: {output_path}")
 
         try:
-            search_results = HTTPUtils.post_json(
-                f"{self.stac_api_url}/search", search_params, timeout=30
-            )
-            items = search_results.get("features", [])
+            # Make request to USGS NAIPPlus service
+            response = requests.get(self.service_url, params=params, timeout=60)
+            response.raise_for_status()
 
-            print(f"Found {len(items)} NAIP items")
-            return items
+            # Check if response is actually an image
+            content_type = response.headers.get("content-type", "")
+            if not content_type.startswith("image/"):
+                # Service might return JSON error
+                try:
+                    error_data = response.json()
+                    raise Exception(f"Service error: {error_data}")
+                except:
+                    raise Exception(f"Unexpected response type: {content_type}")
 
+            # Save the image
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            with open(output_path, "wb") as f:
+                f.write(response.content)
+
+            file_size = len(response.content)
+            print(f"Successfully exported {file_size:,} bytes to: {output_path}")
+
+            # Create metadata
+            metadata = {
+                "service": "USGS NAIPPlus",
+                "service_url": self.service_url,
+                "bbox": {
+                    "min_longitude": min_lon,
+                    "min_latitude": min_lat,
+                    "max_longitude": max_lon,
+                    "max_latitude": max_lat,
+                },
+                "bbox_string": bbox,
+                "coordinate_system": "EPSG:4326",
+                "image_size": image_size,
+                "format": "tiff",
+                "file_size_bytes": file_size,
+                "export_time": datetime.now().isoformat(),
+                "output_path": output_path,
+            }
+
+            return metadata
+
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"Failed to export image from USGS service: {e}")
         except Exception as e:
-            raise Exception(f"Failed to search NAIP items: {e}")
-
-    def get_best_item(self, items: List[Dict]) -> Optional[Dict]:
-        """
-        Select the best NAIP item from the search results.
-
-        Prioritizes the most recent imagery with the highest resolution.
-
-        Args:
-            items: List of STAC items
-
-        Returns:
-            The best item, or None if no suitable item found
-        """
-        if not items:
-            return None
-
-        # Sort by date (most recent first)
-        sorted_items = sorted(
-            items,
-            key=lambda x: x.get("properties", {}).get("datetime", ""),
-            reverse=True,
-        )
-
-        return sorted_items[0]
-
-    def get_download_url(self, item: Dict) -> str:
-        """
-        Get the download URL for the orthophoto image.
-
-        Args:
-            item: STAC item containing asset information
-
-        Returns:
-            URL to download the orthophoto
-
-        Raises:
-            Exception: If no suitable image asset is found
-        """
-        assets = item.get("assets", {})
-
-        # Look for the main image asset (usually 'image' or 'rendered_preview')
-        preferred_assets = ["image", "rendered_preview", "visual"]
-
-        for asset_key in preferred_assets:
-            if asset_key in assets:
-                asset = assets[asset_key]
-                if "href" in asset:
-                    return asset["href"]
-
-        # If no preferred asset found, try the first available image asset
-        for asset_key, asset in assets.items():
-            if asset.get("type", "").startswith("image/"):
-                if "href" in asset:
-                    return asset["href"]
-
-        raise Exception("No suitable image asset found in STAC item")
-
-    def extract_metadata(self, item: Dict) -> Dict:
-        """
-        Extract useful metadata from a STAC item.
-
-        Args:
-            item: STAC item
-
-        Returns:
-            Dictionary containing extracted metadata
-        """
-        properties = item.get("properties", {})
-
-        metadata = {
-            "id": item.get("id"),
-            "datetime": properties.get("datetime"),
-            "collection": item.get("collection"),
-            "gsd": properties.get("gsd"),  # Ground sample distance
-            "proj:epsg": properties.get("proj:epsg"),
-            "naip:year": properties.get("naip:year"),
-            "naip:state": properties.get("naip:state"),
-            "platform": properties.get("platform"),
-            "instruments": properties.get("instruments"),
-            "bbox": item.get("bbox"),
-            "geometry": item.get("geometry"),
-        }
-
-        # Clean up None values
-        metadata = {k: v for k, v in metadata.items() if v is not None}
-
-        return metadata
+            raise Exception(f"Image export failed: {e}")
 
     def save_metadata(
         self, metadata: Dict, output_dir: str, filename: str = "naip_metadata.json"
@@ -181,86 +170,67 @@ class NAIPFetcher:
             output_dir: Directory to save the file
             filename: Name of the output file
         """
-        filepath = JSONUtils.save_metadata(metadata, output_dir, filename)
+        os.makedirs(output_dir, exist_ok=True)
+        filepath = os.path.join(output_dir, filename)
+
+        with open(filepath, "w") as f:
+            json.dump(metadata, f, indent=2)
+
         print(f"Metadata saved to: {filepath}")
-
-    def download_orthophoto(self, url: str, output_path: str):
-        """
-        Download the orthophoto from the given URL.
-
-        Args:
-            url: URL to download from
-            output_path: Local path to save the file
-
-        Raises:
-            Exception: If download fails
-        """
-        print(f"Downloading orthophoto from: {url}")
-        print(f"Saving to: {output_path}")
-
-        try:
-            HTTPUtils.download_file(url, output_path, timeout=60)
-            print(f"Successfully downloaded orthophoto to: {output_path}")
-
-        except Exception as e:
-            raise Exception(f"Failed to download orthophoto: {e}")
+        return filepath
 
     def get_orthophoto_for_address(
-        self, address: str, output_dir: str = "../data", download: bool = True
+        self, address: str, output_dir: str = "../data", image_size: str = "5000,5000"
     ) -> Tuple[str, Dict]:
         """
-        Get NAIP orthophoto for a given address.
+        Get NAIP orthophoto for a given address using USGS NAIPPlus service.
 
         Args:
             address: Street address to geocode and find imagery for
             output_dir: Directory to save downloaded files
-            download: Whether to download the actual image file
+            image_size: Image dimensions as "width,height" string
 
         Returns:
-            Tuple of (download_url, metadata)
+            Tuple of (output_path, metadata)
 
         Raises:
-            Exception: If geocoding or NAIP search fails
+            Exception: If geocoding or image export fails
         """
         # Geocode the address
         print(f"Processing address: {address}")
         geocoder = GeocodeUtils()
         latitude, longitude = geocoder.geocode_address(address)
 
-        # Search for NAIP items
-        items = self.search_naip_items(latitude, longitude)
+        # Calculate acre-sized bounding box
+        min_lon, min_lat, max_lon, max_lat = self.calculate_acre_bbox(
+            latitude, longitude
+        )
 
-        if not items:
-            raise Exception(
-                f"No NAIP imagery found for coordinates: {latitude:.6f}, {longitude:.6f}"
-            )
+        # Generate safe filename
+        safe_name = FileUtils.get_safe_filename(address)
+        filename = f"naip_orthophoto_{safe_name}.tif"
+        output_path = os.path.join(output_dir, filename)
 
-        # Get the best item
-        best_item = self.get_best_item(items)
-        if not best_item:
-            raise Exception("No suitable NAIP item found")
+        # Export the image
+        metadata = self.export_image(
+            min_lon, min_lat, max_lon, max_lat, output_path, image_size
+        )
 
-        # Extract metadata
-        metadata = self.extract_metadata(best_item)
-        print(f"Selected NAIP image from {metadata.get('naip:year', 'unknown year')}")
-
-        # Get download URL
-        download_url = self.get_download_url(best_item)
+        # Add address info to metadata
+        metadata["address"] = address
+        metadata["geocoded_coordinates"] = {
+            "latitude": latitude,
+            "longitude": longitude,
+        }
 
         # Save metadata
         self.save_metadata(metadata, output_dir)
 
-        # Download image if requested
-        if download:
-            filename = f"naip_orthophoto_{metadata.get('id', 'unknown')}.tif"
-            output_path = os.path.join(output_dir, filename)
-            self.download_orthophoto(download_url, output_path)
-
-        return download_url, metadata
+        return output_path, metadata
 
 
 def get_orthophoto_for_address(
-    address: str, output_dir: str = "../data", download: bool = True
+    address: str, output_dir: str = "../data", image_size: str = "5000,5000"
 ) -> Tuple[str, Dict]:
     """
     Convenience function to get NAIP orthophoto for an address.
@@ -268,21 +238,20 @@ def get_orthophoto_for_address(
     Args:
         address: Street address to geocode and find imagery for
         output_dir: Directory to save downloaded files
-        download: Whether to download the actual image file
+        image_size: Image dimensions as "width,height" string
 
     Returns:
-        Tuple of (download_url, metadata)
+        Tuple of (output_path, metadata)
     """
     fetcher = NAIPFetcher()
-    return fetcher.get_orthophoto_for_address(address, output_dir, download)
+    return fetcher.get_orthophoto_for_address(address, output_dir, image_size)
 
 
 if __name__ == "__main__":
-    import sys
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Fetch NAIP orthophoto for a given address using Microsoft Planetary Computer STAC API"
+        description="Fetch NAIP orthophoto for a given address using USGS NAIPPlus service"
     )
     parser.add_argument(
         "address",
@@ -294,22 +263,25 @@ if __name__ == "__main__":
         help="Directory to save downloaded files (default: ../data)",
     )
     parser.add_argument(
-        "--no-download",
-        action="store_true",
-        help="Don't download the actual image file, just get the URL and metadata",
+        "--image-size",
+        default="5000,5000",
+        help="Image size as 'width,height' (default: 5000,5000)",
     )
 
     args = parser.parse_args()
 
     try:
-        url, metadata = get_orthophoto_for_address(
-            args.address, args.output_dir, download=not args.no_download
+        output_path, metadata = get_orthophoto_for_address(
+            args.address, args.output_dir, args.image_size
         )
         print(f"\nSuccess!")
-        print(f"Download URL: {url}")
-        print(f"Image year: {metadata.get('naip:year', 'Unknown')}")
-        print(f"State: {metadata.get('naip:state', 'Unknown')}")
-        print(f"Ground sample distance: {metadata.get('gsd', 'Unknown')} meters")
+        print(f"Image saved to: {output_path}")
+        print(f"File size: {metadata.get('file_size_bytes', 0):,} bytes")
+        bbox = metadata.get("bbox", {})
+        print(
+            f"Bounding box: {bbox.get('min_longitude', 'N/A'):.6f}, {bbox.get('min_latitude', 'N/A'):.6f} to {bbox.get('max_longitude', 'N/A'):.6f}, {bbox.get('max_latitude', 'N/A'):.6f}"
+        )
+        print(f"Image size: {metadata.get('image_size', 'N/A')}")
 
     except Exception as e:
         print(f"Error: {e}")

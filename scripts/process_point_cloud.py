@@ -888,18 +888,12 @@ class PointCloudColorizer:
 
         try:
             # Try fetching orthophoto using coordinates
-            ortho_url, ortho_metadata = ortho_fetcher.get_orthophoto_for_address(
-                address, str(self.output_dir), download=True
+            ortho_path, ortho_metadata = ortho_fetcher.get_orthophoto_for_address(
+                address, str(self.output_dir)
             )
 
-            # Find the downloaded orthophoto file
-            ortho_files = list(self.output_dir.glob("naip_orthophoto_*.tif"))
-            if not ortho_files:
-                raise RuntimeError("Orthophoto download failed - no files found")
-
-            ortho_path = ortho_files[0]
             logger.info(f"Orthophoto downloaded: {ortho_path}")
-            return str(ortho_path)
+            return ortho_path
 
         except Exception as e:
             logger.error(f"Failed to fetch orthophoto: {e}")
