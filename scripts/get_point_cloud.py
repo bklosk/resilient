@@ -222,6 +222,187 @@ class PointCloudDatasetFinder:
             logger.error(f"Failed to download dataset {dataset_name}: {e}")
             return False
 
+    def download_dataset_with_orthophoto_bounds(
+        self, dataset_name: str, output_dir: str, ortho_bounds: Dict, ortho_crs: str
+    ) -> bool:
+        """Download EPT point cloud data for a dataset, focusing on tiles that overlap with orthophoto bounds.
+
+        Args:
+            dataset_name: Name of the dataset to download
+            output_dir: Directory to save downloaded files
+            ortho_bounds: Orthophoto bounds dict with left, right, bottom, top
+            ortho_crs: Orthophoto coordinate reference system
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            # Create output directory
+            dataset_dir = os.path.join(output_dir, dataset_name.replace("/", "_"))
+            os.makedirs(dataset_dir, exist_ok=True)
+
+            logger.info(
+                f"Downloading point cloud data with orthophoto bounds awareness for: {dataset_name}"
+            )
+            logger.info(f"Orthophoto bounds: {ortho_bounds} (CRS: {ortho_crs})")
+
+            # First, get and save EPT metadata
+            logger.info(f"Downloading EPT metadata for {dataset_name}")
+            metadata = self.get_ept_metadata(dataset_name)
+            if not metadata:
+                logger.error(f"Could not retrieve metadata for {dataset_name}")
+                return False
+
+            # Save metadata
+            metadata_path = self.json_utils.save_metadata(
+                metadata, dataset_dir, "ept.json"
+            )
+            logger.info(f"Saved EPT metadata to: {metadata_path}")
+
+            # Get dataset CRS and bounds from metadata
+            dataset_srs = metadata.get("srs", {})
+            dataset_bounds = metadata.get("bounds", [])
+
+            if not dataset_bounds or len(dataset_bounds) < 4:
+                logger.warning(
+                    "Dataset bounds not found in metadata, falling back to sample tiles"
+                )
+                return self.download_dataset(dataset_name, output_dir)
+
+            dataset_crs = None
+            if dataset_srs:
+                # Try to construct CRS from metadata
+                authority = dataset_srs.get("authority")
+                horizontal = dataset_srs.get("horizontal")
+                if authority and horizontal:
+                    dataset_crs = f"{authority}:{horizontal}"
+                    logger.info(f"Dataset CRS: {dataset_crs}")
+
+            # Transform orthophoto bounds to dataset CRS for comparison
+            if dataset_crs and dataset_crs != ortho_crs:
+                try:
+                    from pyproj import Transformer, CRS
+
+                    transformer = Transformer.from_crs(
+                        CRS.from_string(ortho_crs),
+                        CRS.from_string(dataset_crs),
+                        always_xy=True,
+                    )
+
+                    # Transform orthophoto corners to dataset CRS
+                    ortho_left_ds, ortho_bottom_ds = transformer.transform(
+                        ortho_bounds["left"], ortho_bounds["bottom"]
+                    )
+                    ortho_right_ds, ortho_top_ds = transformer.transform(
+                        ortho_bounds["right"], ortho_bounds["top"]
+                    )
+
+                    target_bounds = {
+                        "left": ortho_left_ds,
+                        "right": ortho_right_ds,
+                        "bottom": ortho_bottom_ds,
+                        "top": ortho_top_ds,
+                    }
+
+                    logger.info(f"Orthophoto bounds in dataset CRS: {target_bounds}")
+
+                except Exception as e:
+                    logger.warning(
+                        f"Could not transform orthophoto bounds to dataset CRS: {e}"
+                    )
+                    target_bounds = ortho_bounds
+            else:
+                target_bounds = ortho_bounds
+
+            # Check if orthophoto bounds overlap with dataset bounds
+            ds_xmin, ds_ymin = dataset_bounds[0], dataset_bounds[1]
+            ds_xmax, ds_ymax = dataset_bounds[3], dataset_bounds[4]
+
+            overlap_x = not (
+                target_bounds["right"] < ds_xmin or target_bounds["left"] > ds_xmax
+            )
+            overlap_y = not (
+                target_bounds["top"] < ds_ymin or target_bounds["bottom"] > ds_ymax
+            )
+
+            if not (overlap_x and overlap_y):
+                logger.warning("Orthophoto bounds do not overlap with dataset bounds")
+                logger.warning(
+                    f"Dataset bounds: X[{ds_xmin:.0f}, {ds_xmax:.0f}] Y[{ds_ymin:.0f}, {ds_ymax:.0f}]"
+                )
+                logger.warning(
+                    f"Target bounds: X[{target_bounds['left']:.0f}, {target_bounds['right']:.0f}] Y[{target_bounds['bottom']:.0f}, {target_bounds['top']:.0f}]"
+                )
+                logger.info(
+                    "Trying sample tiles from different areas of the dataset..."
+                )
+
+            # Try a broader set of tiles at multiple levels
+            # Level 0: Root tile (covers entire dataset)
+            # Level 1: 8 tiles covering different quadrants
+            # Level 2: More specific tiles if available
+            candidate_tiles = [
+                "0-0-0-0.laz",  # Root tile - always try this first
+                # Level 1 tiles (8 octants)
+                "1-0-0-0.laz",
+                "1-0-0-1.laz",
+                "1-0-1-0.laz",
+                "1-0-1-1.laz",
+                "1-1-0-0.laz",
+                "1-1-0-1.laz",
+                "1-1-1-0.laz",
+                "1-1-1-1.laz",
+                # Level 2 tiles (more specific areas) - try a few from different quadrants
+                "2-0-0-0.laz",
+                "2-0-0-1.laz",
+                "2-1-1-0.laz",
+                "2-1-1-1.laz",
+                "2-0-1-0.laz",
+                "2-0-1-1.laz",
+                "2-1-0-0.laz",
+                "2-1-0-1.laz",
+            ]
+
+            downloaded_count = 0
+            max_downloads = 8  # Try more tiles to increase chance of overlap
+            successful_tiles = []
+
+            for tile in candidate_tiles:
+                if downloaded_count >= max_downloads:
+                    break
+
+                tile_key = f"{dataset_name}/ept-data/{tile}"
+                tile_path = os.path.join(dataset_dir, tile)
+
+                try:
+                    logger.info(f"Downloading tile: {tile}")
+                    self.s3_client.download_file(self.bucket_name, tile_key, tile_path)
+
+                    file_size = os.path.getsize(tile_path)
+                    logger.info(f"Downloaded {tile} ({file_size:,} bytes)")
+                    downloaded_count += 1
+                    successful_tiles.append(tile)
+
+                except Exception as e:
+                    logger.debug(f"Tile {tile} not available: {e}")
+                    continue
+
+            if downloaded_count > 0:
+                logger.info(
+                    f"Successfully downloaded {downloaded_count} data tiles: {successful_tiles}"
+                )
+                logger.info(f"Files saved to: {dataset_dir}")
+                return True
+            else:
+                logger.error("No tiles could be downloaded")
+                return False
+
+        except Exception as e:
+            logger.error(
+                f"Failed to download dataset {dataset_name} with orthophoto bounds: {e}"
+            )
+            return False
+
     def list_available_datasets(self, datasets: List[Dict]) -> None:
         """Display information about available datasets."""
         if not datasets:
@@ -811,12 +992,20 @@ class PointCloudDatasetFinder:
         )
         return laz_products
 
-    def download_point_cloud(self, product: Dict, output_dir: str) -> str:
+    def download_point_cloud(
+        self,
+        product: Dict,
+        output_dir: str,
+        ortho_bounds: Optional[Dict] = None,
+        ortho_crs: Optional[str] = None,
+    ) -> str:
         """Download point cloud data for a specific product.
 
         Args:
             product: Product dictionary containing dataset information
             output_dir: Directory to save downloaded files
+            ortho_bounds: Optional orthophoto bounds for smart tile selection
+            ortho_crs: Optional orthophoto CRS
 
         Returns:
             Path to downloaded LAZ file
@@ -831,9 +1020,14 @@ class PointCloudDatasetFinder:
             # Create output directory
             os.makedirs(output_dir, exist_ok=True)
 
-            # For now, use the existing download_dataset method
-            # In production, this would implement more targeted LAZ file download
-            success = self.download_dataset(dataset_name, output_dir)
+            # Use orthophoto-aware download if bounds are provided
+            if ortho_bounds and ortho_crs:
+                success = self.download_dataset_with_orthophoto_bounds(
+                    dataset_name, output_dir, ortho_bounds, ortho_crs
+                )
+            else:
+                # Fall back to existing method
+                success = self.download_dataset(dataset_name, output_dir)
 
             if success:
                 # Look for downloaded LAZ files
@@ -846,7 +1040,25 @@ class PointCloudDatasetFinder:
                         )
 
                 if laz_files:
-                    # Return the first LAZ file found
+                    # If we have orthophoto bounds, test each file to find the best overlap
+                    if ortho_bounds and ortho_crs and len(laz_files) > 1:
+                        logger.info(
+                            f"Testing {len(laz_files)} downloaded tiles for orthophoto overlap..."
+                        )
+                        best_file = self._find_best_overlapping_tile(
+                            laz_files, ortho_bounds, ortho_crs
+                        )
+                        if best_file:
+                            logger.info(
+                                f"Selected best overlapping tile: {os.path.basename(best_file)}"
+                            )
+                            return best_file
+                        else:
+                            logger.warning(
+                                "No overlapping tiles found, using first available"
+                            )
+
+                    # Return the first LAZ file found (fallback behavior)
                     downloaded_file = laz_files[0]
                     logger.info(f"Downloaded point cloud: {downloaded_file}")
                     return downloaded_file
@@ -858,6 +1070,161 @@ class PointCloudDatasetFinder:
         except Exception as e:
             logger.error(f"Error downloading point cloud: {e}")
             raise
+
+    def _find_best_overlapping_tile(
+        self, laz_files: List[str], ortho_bounds: Dict, ortho_crs: str
+    ) -> Optional[str]:
+        """Find the LAZ tile with the best overlap with orthophoto bounds.
+
+        Args:
+            laz_files: List of LAZ file paths to test
+            ortho_bounds: Orthophoto bounds dict
+            ortho_crs: Orthophoto CRS
+
+        Returns:
+            Path to best overlapping tile, or None if no overlap found
+        """
+        try:
+            import laspy
+            import numpy as np
+            from pyproj import Transformer, CRS
+
+            best_file = None
+            best_overlap_score = 0
+            best_distance = float("inf")
+
+            logger.info("Testing tile overlaps with orthophoto...")
+
+            for laz_file in laz_files:
+                try:
+                    # Quick read of tile to get bounds
+                    las_data = laspy.read(laz_file)
+
+                    if len(las_data.points) == 0:
+                        logger.debug(
+                            f"Skipping empty tile: {os.path.basename(laz_file)}"
+                        )
+                        continue
+
+                    # Get point cloud bounds
+                    pc_x_min, pc_x_max = float(np.min(las_data.x)), float(
+                        np.max(las_data.x)
+                    )
+                    pc_y_min, pc_y_max = float(np.min(las_data.y)), float(
+                        np.max(las_data.y)
+                    )
+
+                    # Detect coordinate system (same logic as main colorization)
+                    if abs(pc_x_min) > 1000000 or abs(pc_y_min) > 1000000:
+                        # Likely projected coordinates (Web Mercator or UTM)
+                        if abs(pc_x_min) > 10000000:  # Web Mercator range
+                            pc_crs = "EPSG:3857"
+                        else:  # Assume UTM
+                            pc_crs = "EPSG:26913"  # Common for Colorado
+                    else:
+                        # Likely geographic coordinates
+                        pc_crs = "EPSG:4326"
+
+                    # Transform orthophoto bounds to point cloud CRS for comparison
+                    if pc_crs != ortho_crs:
+                        transformer = Transformer.from_crs(
+                            CRS.from_string(ortho_crs),
+                            CRS.from_string(pc_crs),
+                            always_xy=True,
+                        )
+                        ortho_left_pc, ortho_bottom_pc = transformer.transform(
+                            ortho_bounds["left"], ortho_bounds["bottom"]
+                        )
+                        ortho_right_pc, ortho_top_pc = transformer.transform(
+                            ortho_bounds["right"], ortho_bounds["top"]
+                        )
+                    else:
+                        ortho_left_pc = ortho_bounds["left"]
+                        ortho_right_pc = ortho_bounds["right"]
+                        ortho_bottom_pc = ortho_bounds["bottom"]
+                        ortho_top_pc = ortho_bounds["top"]
+
+                    # Check overlap
+                    overlap_x = not (
+                        pc_x_max < ortho_left_pc or pc_x_min > ortho_right_pc
+                    )
+                    overlap_y = not (
+                        pc_y_max < ortho_bottom_pc or pc_y_min > ortho_top_pc
+                    )
+
+                    # Calculate distance between centers
+                    pc_center_x = (pc_x_min + pc_x_max) / 2
+                    pc_center_y = (pc_y_min + pc_y_max) / 2
+                    ortho_center_x = (ortho_left_pc + ortho_right_pc) / 2
+                    ortho_center_y = (ortho_bottom_pc + ortho_top_pc) / 2
+
+                    distance = (
+                        (pc_center_x - ortho_center_x) ** 2
+                        + (pc_center_y - ortho_center_y) ** 2
+                    ) ** 0.5
+
+                    overlap_score = 0
+                    if overlap_x and overlap_y:
+                        # Calculate actual overlap area
+                        overlap_left = max(pc_x_min, ortho_left_pc)
+                        overlap_right = min(pc_x_max, ortho_right_pc)
+                        overlap_bottom = max(pc_y_min, ortho_bottom_pc)
+                        overlap_top = min(pc_y_max, ortho_top_pc)
+
+                        if (
+                            overlap_left < overlap_right
+                            and overlap_bottom < overlap_top
+                        ):
+                            overlap_area = (overlap_right - overlap_left) * (
+                                overlap_top - overlap_bottom
+                            )
+                            ortho_area = (ortho_right_pc - ortho_left_pc) * (
+                                ortho_top_pc - ortho_bottom_pc
+                            )
+                            overlap_score = (
+                                overlap_area / ortho_area if ortho_area > 0 else 0
+                            )
+
+                    tile_name = os.path.basename(laz_file)
+                    logger.debug(
+                        f"Tile {tile_name}: overlap={overlap_x and overlap_y}, score={overlap_score:.3f}, distance={distance:.0f}m, points={len(las_data.points)}"
+                    )
+
+                    # Select best tile based on overlap score, then distance
+                    if overlap_score > best_overlap_score:
+                        best_file = laz_file
+                        best_overlap_score = overlap_score
+                        best_distance = distance
+                        logger.info(
+                            f"New best tile: {tile_name} (overlap score: {overlap_score:.3f})"
+                        )
+                    elif (
+                        overlap_score == best_overlap_score and distance < best_distance
+                    ):
+                        best_file = laz_file
+                        best_distance = distance
+                        logger.info(
+                            f"New best tile by distance: {tile_name} (distance: {distance:.0f}m)"
+                        )
+
+                except Exception as e:
+                    logger.debug(
+                        f"Error testing tile {os.path.basename(laz_file)}: {e}"
+                    )
+                    continue
+
+            if best_file:
+                logger.info(
+                    f"Best tile found: {os.path.basename(best_file)} (overlap score: {best_overlap_score:.3f}, distance: {best_distance:.0f}m)"
+                )
+            else:
+                logger.warning("No overlapping tiles found")
+
+            return best_file
+
+        except Exception as e:
+            logger.error(f"Error finding best overlapping tile: {e}")
+            return None
 
 
 def main():

@@ -812,7 +812,7 @@ class PointCloudColorizer:
                     )
 
                     downloaded_pc = pc_fetcher.download_point_cloud(
-                        best_product, str(self.output_dir)
+                        best_product, str(self.output_dir), ortho_bounds, ortho_crs
                     )
 
                     if downloaded_pc and Path(downloaded_pc).exists():
