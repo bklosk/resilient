@@ -53,7 +53,11 @@ class NAIPFetcher:
         """
         # Create bounding box around the point
         bbox_utils = BoundingBoxUtils()
-        bbox = bbox_utils.create_bbox_from_point(latitude, longitude, bbox_size)
+        # Convert bbox_size from degrees to kilometers (rough approximation: 1 degree ≈ 111 km)
+        buffer_km = bbox_size * 111.0
+        bbox_string = bbox_utils.generate_bounding_box(latitude, longitude, buffer_km)
+        # Convert from string format "min_lon,min_lat,max_lon,max_lat" to list format
+        bbox = [float(x) for x in bbox_string.split(",")]
 
         search_params = {
             "collections": [self.collection],
@@ -256,7 +260,7 @@ class NAIPFetcher:
 
 
 def get_orthophoto_for_address(
-    address: str, output_dir: str = "../data"
+    address: str, output_dir: str = "../data", download: bool = True
 ) -> Tuple[str, Dict]:
     """
     Convenience function to get NAIP orthophoto for an address.
@@ -264,25 +268,43 @@ def get_orthophoto_for_address(
     Args:
         address: Street address to geocode and find imagery for
         output_dir: Directory to save downloaded files
+        download: Whether to download the actual image file
 
     Returns:
         Tuple of (download_url, metadata)
     """
     fetcher = NAIPFetcher()
-    return fetcher.get_orthophoto_for_address(address, output_dir)
+    return fetcher.get_orthophoto_for_address(address, output_dir, download)
 
 
 if __name__ == "__main__":
     import sys
+    import argparse
 
-    if len(sys.argv) != 2:
-        print("Usage: python get_orthophoto.py '<address>'")
-        print("Example: python get_orthophoto.py '1250 Wildwood Road, Boulder, CO'")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(
+        description="Fetch NAIP orthophoto for a given address using Microsoft Planetary Computer STAC API"
+    )
+    parser.add_argument(
+        "address",
+        help="Street address to geocode and find imagery for (e.g., '1250 Wildwood Road, Boulder, CO')",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default="../data",
+        help="Directory to save downloaded files (default: ../data)",
+    )
+    parser.add_argument(
+        "--no-download",
+        action="store_true",
+        help="Don't download the actual image file, just get the URL and metadata",
+    )
 
-    address = sys.argv[1]
+    args = parser.parse_args()
+
     try:
-        url, metadata = get_orthophoto_for_address(address)
+        url, metadata = get_orthophoto_for_address(
+            args.address, args.output_dir, download=not args.no_download
+        )
         print(f"\nSuccess!")
         print(f"Download URL: {url}")
         print(f"Image year: {metadata.get('naip:year', 'Unknown')}")
