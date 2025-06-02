@@ -135,7 +135,7 @@ class PointCloudColorizer:
 
     def load_orthophoto(self, file_path: str) -> rasterio.DatasetReader:
         """
-        Load orthophoto with validation.
+        Load orthophoto with validation and fallback for filename mismatches.
 
         Args:
             file_path: Path to orthophoto file
@@ -144,8 +144,48 @@ class PointCloudColorizer:
             Rasterio dataset
         """
         file_path = Path(file_path)
+
+        # If the exact file doesn't exist, try to find orthophoto files in the same directory
         if not file_path.exists():
-            raise FileNotFoundError(f"Orthophoto file not found: {file_path}")
+            parent_dir = file_path.parent
+            logger.warning(f"Orthophoto file not found: {file_path}")
+
+            if parent_dir.exists():
+                logger.info(
+                    f"Searching for orthophoto files in directory: {parent_dir}"
+                )
+
+                # Look for any TIFF files that might be orthophotos
+                tiff_patterns = ["*.tif", "*.tiff", "*naip*.tif", "*orthophoto*.tif"]
+                found_files = []
+
+                for pattern in tiff_patterns:
+                    found_files.extend(list(parent_dir.glob(pattern)))
+
+                if found_files:
+                    # Use the first valid orthophoto file found
+                    for candidate_file in found_files:
+                        try:
+                            logger.info(f"Trying candidate file: {candidate_file}")
+                            with rasterio.open(str(candidate_file)) as test_ds:
+                                if test_ds.width > 0 and test_ds.height > 0:
+                                    logger.info(
+                                        f"Found valid orthophoto: {candidate_file}"
+                                    )
+                                    file_path = candidate_file
+                                    break
+                        except Exception:
+                            continue
+                    else:
+                        raise FileNotFoundError(
+                            f"No valid orthophoto files found in {parent_dir}"
+                        )
+                else:
+                    raise FileNotFoundError(
+                        f"No orthophoto files found in {parent_dir}"
+                    )
+            else:
+                raise FileNotFoundError(f"Orthophoto file not found: {file_path}")
 
         try:
             logger.info(f"Loading orthophoto: {file_path}")
@@ -553,7 +593,12 @@ class PointCloudColorizer:
             # Calculate buffer distance as a percentage of the dataset size
             ortho_width = ortho_dataset.bounds.right - ortho_dataset.bounds.left
             ortho_height = ortho_dataset.bounds.top - ortho_dataset.bounds.bottom
-            buffer_distance = min(ortho_width, ortho_height) * 0.1  # 10% buffer
+
+            # Use a more generous buffer for small orthophotos
+            # Minimum buffer of 50 meters, or 50% of orthophoto size, whichever is larger
+            percentage_buffer = min(ortho_width, ortho_height) * 0.5  # 50% buffer
+            minimum_buffer = 50.0  # 50 meters minimum
+            buffer_distance = max(percentage_buffer, minimum_buffer)
 
             logger.info(f"Using buffer distance: {buffer_distance:.2f} meters")
 
@@ -873,7 +918,7 @@ class PointCloudColorizer:
         self, ortho_fetcher: "NAIPFetcher", address: str, lat: float, lon: float
     ) -> str:
         """
-        Fetch orthophoto data for given address/coordinates.
+        Fetch orthophoto data for given address/coordinates with improved error handling.
 
         Args:
             ortho_fetcher: Orthophoto fetcher instance
@@ -893,7 +938,46 @@ class PointCloudColorizer:
             )
 
             logger.info(f"Orthophoto downloaded: {ortho_path}")
-            return ortho_path
+
+            # Verify the file exists and is valid
+            if Path(ortho_path).exists():
+                try:
+                    with rasterio.open(ortho_path) as test_ds:
+                        logger.info(
+                            f"Orthophoto validation successful: {test_ds.width}x{test_ds.height}"
+                        )
+                        return ortho_path
+                except Exception as e:
+                    logger.warning(f"Downloaded orthophoto failed validation: {e}")
+                    # File exists but is invalid, try to find alternative
+            else:
+                logger.warning(f"Expected orthophoto file not found: {ortho_path}")
+
+            # If the expected file doesn't exist or is invalid, search for any orthophoto in the directory
+            output_dir = Path(self.output_dir)
+            if output_dir.exists():
+                logger.info("Searching for alternative orthophoto files...")
+
+                # Look for any TIFF files that might be orthophotos
+                tiff_patterns = ["*.tif", "*.tiff", "*naip*.tif", "*orthophoto*.tif"]
+                found_files = []
+
+                for pattern in tiff_patterns:
+                    found_files.extend(list(output_dir.glob(pattern)))
+
+                for candidate_file in found_files:
+                    try:
+                        with rasterio.open(str(candidate_file)) as test_ds:
+                            if test_ds.width > 0 and test_ds.height > 0:
+                                logger.info(
+                                    f"Found alternative valid orthophoto: {candidate_file}"
+                                )
+                                return str(candidate_file)
+                    except Exception:
+                        continue
+
+            # If we still haven't found a valid file, raise an error
+            raise RuntimeError(f"No valid orthophoto file found after download attempt")
 
         except Exception as e:
             logger.error(f"Failed to fetch orthophoto: {e}")

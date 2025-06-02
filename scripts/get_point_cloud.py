@@ -416,12 +416,26 @@ class PointCloudDatasetFinder:
             ds_height = dataset_bounds[4] - dataset_bounds[1]  # ymax - ymin
             ds_area = ds_width * ds_height
 
+            # Find available tile levels in hierarchy
+            available_levels = set()
+            for tile_name in hierarchy.keys():
+                parts = tile_name.split("-")
+                if len(parts) >= 1:
+                    try:
+                        level = int(parts[0])
+                        available_levels.add(level)
+                    except ValueError:
+                        continue
+            
+            available_levels = sorted(available_levels)
+            logger.info(f"Available tile levels: {available_levels}")
+
             # Calculate what tile level we need for good coverage
             # Each level subdivides by 2 in each dimension (4x area subdivision)
             area_ratio = target_area / ds_area
-            target_level = max(
-                0, min(8, int(-math.log2(area_ratio) / 2) + 2)
-            )  # Cap at reasonable levels
+            calculated_level = max(
+                0, min(6, int(-math.log2(area_ratio) / 2) + 1)
+            )  # More conservative calculation
 
             logger.info(
                 f"Target area: {target_area:.0f} sq units ({target_width:.0f} x {target_height:.0f})"
@@ -429,14 +443,34 @@ class PointCloudDatasetFinder:
             logger.info(
                 f"Dataset area: {ds_area:.0f} sq units, area ratio: {area_ratio:.6f}"
             )
-            logger.info(f"Calculated target tile level: {target_level}")
+            logger.info(f"Calculated ideal tile level: {calculated_level}")
 
-            # Try multiple tile levels for better coverage
-            levels_to_try = [target_level]
-            if target_level > 0:
-                levels_to_try.append(target_level - 1)  # Coarser level as backup
-            if target_level < 6:
-                levels_to_try.append(target_level + 1)  # Finer level for more detail
+            # Use available levels, starting from calculated level and working down/up
+            levels_to_try = []
+            
+            # Start with calculated level if available
+            if calculated_level in available_levels:
+                levels_to_try.append(calculated_level)
+            
+            # Add nearby levels, prioritizing higher resolution (higher numbers)
+            for offset in [1, -1, 2, -2, 3, -3]:
+                level = calculated_level + offset
+                if level in available_levels and level not in levels_to_try:
+                    levels_to_try.append(level)
+            
+            # Add any remaining available levels
+            for level in reversed(available_levels):  # Higher levels first
+                if level not in levels_to_try:
+                    levels_to_try.append(level)
+            
+            # Limit to reasonable range (levels 2-6 are usually most useful)
+            levels_to_try = [l for l in levels_to_try if 2 <= l <= 6][:4]  # Max 4 levels
+            
+            if not levels_to_try:
+                # Fallback to any available levels
+                levels_to_try = [l for l in available_levels if l >= 2][:3]
+            
+            logger.info(f"Trying tile levels in order: {levels_to_try}")
 
             for level in levels_to_try:
                 logger.info(f"Downloading tiles at level {level}...")
@@ -450,9 +484,16 @@ class PointCloudDatasetFinder:
                 )
                 successful_files.extend(level_files)
 
-                # If we got good coverage, we can stop
-                if len(successful_files) >= 5:  # Reasonable number of tiles
+                # Check if we have good coverage
+                # For small areas (4-acre orthophotos), even 1-2 tiles might be sufficient
+                if len(successful_files) >= 3:  # Lowered threshold for small areas
+                    logger.info(f"Got sufficient coverage with {len(successful_files)} tiles")
                     break
+                
+                # Continue if no tiles found at this level
+                if not level_files:
+                    logger.info(f"No suitable tiles found at level {level}, trying next level")
+                    continue
 
             # Merge tiles if we have multiple small ones
             if len(successful_files) > 1:
@@ -520,12 +561,18 @@ class PointCloudDatasetFinder:
             )
 
             downloaded_count = 0
-            max_tiles = 50  # Increased limit for better coverage
+            max_tiles = 100  # Increased limit for better geographic coverage
+            max_points = 10_000_000  # 10M point limit to prevent huge downloads
             total_points = 0
 
             # Download tiles that exist in hierarchy and intersect target area
             for tile_name, point_count in level_tiles.items():
                 if downloaded_count >= max_tiles:
+                    logger.info(f"Reached maximum tile limit ({max_tiles})")
+                    break
+                
+                if total_points + point_count > max_points:
+                    logger.info(f"Approaching point limit ({max_points:,}), stopping downloads")
                     break
 
                 # Parse tile coordinates
