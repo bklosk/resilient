@@ -30,7 +30,7 @@ sys.path.insert(0, str(scripts_dir))
 try:
     from process_point_cloud import PointCloudColorizer
     from geocode import Geocoder
-    from get_point_cloud import PointCloudFetcher
+    from get_point_cloud import PointCloudDatasetFinder
     from get_orthophoto import NAIPFetcher
 except ImportError as e:
     print(f"Error importing required modules: {e}")
@@ -262,7 +262,7 @@ def process_point_cloud_background(job_id: str, address: str, buffer_km: float):
         try:
             update_job_status(job_id, metadata={"processing_step": "searching_lidar"})
 
-            pc_fetcher = PointCloudFetcher()
+            pc_fetcher = PointCloudDatasetFinder()
             bbox = pc_fetcher.generate_bounding_box(lat, lon, buffer_km)
 
             # Validate bounding box - handle both string and list formats

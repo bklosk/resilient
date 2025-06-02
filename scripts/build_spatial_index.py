@@ -6,23 +6,20 @@ This script builds a spatial index of all EPT datasets in the USGS AWS bucket
 by downloading all ept.json metadata files and storing them in a format that
 allows for fast spatial queries.
 
-The index is saved as a JSON file that can be quickly loaded for spatial lookups.
-
 Usage:
     python build_spatial_index.py [--output spatial_index.json] [--update]
 """
 
+import argparse
 import json
 import os
 import sys
-import argparse
-import time
-from typing import Dict, List, Optional, Tuple
-import boto3
-from botocore import UNSIGNED
-from botocore.config import Config
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Dict, List, Optional
+
+from utils import S3Utils, JSONUtils
 
 
 class SpatialIndexBuilder:
@@ -33,13 +30,13 @@ class SpatialIndexBuilder:
         self.bucket_name = "usgs-lidar-public"
         self.max_workers = max_workers
 
-        # Create S3 client with no credentials required for public bucket
-        self.s3_client = boto3.client(
-            "s3", region_name="us-west-2", config=Config(signature_version=UNSIGNED)
-        )
+        # Use centralized S3 client
+        self.s3_utils = S3Utils()
+        self.s3_client = self.s3_utils.get_client()
 
         # Thread-safe counter for progress tracking
         self.processed_count = 0
+        self.lock = threading.Lock()
         self.lock = threading.Lock()
 
     def list_all_datasets(self) -> List[str]:
@@ -241,8 +238,7 @@ def load_existing_index(filepath: str) -> Optional[Dict]:
     try:
         if os.path.exists(filepath):
             print(f"Loading existing index from {filepath}")
-            with open(filepath, "r") as f:
-                return json.load(f)
+            return JSONUtils.load_json(filepath)
     except Exception as e:
         print(f"Error loading existing index: {e}")
     return None
@@ -252,8 +248,9 @@ def save_spatial_index(spatial_index: Dict, filepath: str) -> bool:
     """Save spatial index to file."""
     try:
         print(f"Saving spatial index to {filepath}")
-        with open(filepath, "w") as f:
-            json.dump(spatial_index, f, indent=2)
+        JSONUtils.save_metadata(
+            spatial_index, os.path.dirname(filepath), os.path.basename(filepath)
+        )
 
         # Print summary
         datasets = spatial_index.get("datasets", [])

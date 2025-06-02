@@ -50,8 +50,9 @@ except ImportError:
 
 # Import local modules
 from geocode import Geocoder
-from get_point_cloud import PointCloudFetcher
+from get_point_cloud import PointCloudDatasetFinder
 from get_orthophoto import NAIPFetcher
+from utils import CRSUtils, BoundingBoxUtils, FileUtils
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -163,48 +164,8 @@ class PointCloudColorizer:
             raise RuntimeError(f"Failed to load orthophoto: {e}")
 
     def detect_point_cloud_crs(self, las_data: laspy.LasData) -> Optional[str]:
-        """
-        Intelligently detect point cloud CRS.
-
-        Args:
-            las_data: Point cloud data
-
-        Returns:
-            CRS string or None if detection fails
-        """
-        # Try header CRS first
-        if (
-            hasattr(las_data, "header")
-            and hasattr(las_data.header, "crs")
-            and las_data.header.crs
-        ):
-            crs_str = str(las_data.header.crs)
-            logger.info(f"Point cloud CRS from header: {crs_str}")
-            return crs_str
-
-        # Try to infer from coordinate ranges
-        x_coords = las_data.x
-        y_coords = las_data.y
-
-        x_min, x_max = np.min(x_coords), np.max(x_coords)
-        y_min, y_max = np.min(y_coords), np.max(y_coords)
-
-        # Check coordinate ranges to guess CRS
-        if 3000000 < x_min < 3200000 and 1700000 < y_min < 1900000:
-            # Likely Colorado State Plane (feet)
-            logger.info("Detected likely Colorado State Plane coordinates (feet)")
-            return "EPSG:2232"
-        elif 400000 < x_min < 800000 and 4000000 < y_min < 5000000:
-            # Likely UTM Zone 13N (meters)
-            logger.info("Detected likely UTM Zone 13N coordinates")
-            return "EPSG:26913"
-        elif 3000000 < x_min < 3200000 and 500000 < y_min < 700000:
-            # Likely Colorado State Plane (meters)
-            logger.info("Detected likely Colorado State Plane coordinates (meters)")
-            return "EPSG:26954"
-
-        logger.warning("Could not automatically detect point cloud CRS")
-        return None
+        """Detect point cloud CRS using centralized utilities."""
+        return CRSUtils.detect_point_cloud_crs(las_data)
 
     def transform_point_cloud_to_ortho_crs(
         self, las_data: laspy.LasData, ortho_crs: str, source_crs: Optional[str] = None
@@ -581,7 +542,7 @@ class PointCloudColorizer:
         logger.info(f"Saved colorized point cloud ({file_size:.1f} MB)")
 
     def _fetch_point_cloud_data(
-        self, pc_fetcher: "PointCloudFetcher", lat: float, lon: float
+        self, pc_fetcher: "PointCloudDatasetFinder", lat: float, lon: float
     ) -> str:
         """
         Fetch point cloud data for given coordinates with retry logic.
@@ -745,7 +706,7 @@ class PointCloudColorizer:
 
         # Initialize fetchers
         geocoder = Geocoder()
-        pc_fetcher = PointCloudFetcher()
+        pc_fetcher = PointCloudDatasetFinder()
         ortho_fetcher = NAIPFetcher()
 
         try:

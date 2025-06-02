@@ -7,8 +7,8 @@ for any given address using a spatial index approach. The script geocodes addres
 finds intersecting datasets, and provides options to list or download EPT data.
 
 Usage:
-    python get_point_cloud_improved.py "1250 Wildwood Road, Boulder, CO" --list-only
-    python get_point_cloud_improved.py "1250 Wildwood Road, Boulder, CO" --download
+    python get_point_cloud.py "1250 Wildwood Road, Boulder, CO" --list-only
+    python get_point_cloud.py "1250 Wildwood Road, Boulder, CO" --download
 """
 
 import requests
@@ -17,12 +17,7 @@ import os
 import argparse
 import logging
 from typing import List, Dict, Optional, Tuple
-from geopy.geocoders import Nominatim
-from geopy.exc import GeopyError
 from pyproj import Transformer
-import boto3
-from botocore import UNSIGNED
-from botocore.config import Config
 
 # Set up logging
 logging.basicConfig(
@@ -33,12 +28,17 @@ logger = logging.getLogger(__name__)
 
 class PointCloudDatasetFinder:
     def __init__(self, spatial_index_path: str = None):
-        self.geolocator = Nominatim(user_agent="usgs_lidar_downloader")
+        # Use centralized utilities
+        from utils import GeocodeUtils, BoundingBoxUtils, S3Utils, JSONUtils
+
+        self.geocode_utils = GeocodeUtils()
+        self.bbox_utils = BoundingBoxUtils()
+        self.s3_utils = S3Utils()
+        self.json_utils = JSONUtils()
+
         self.bucket_name = "usgs-lidar-public"
-        # Create S3 client with no credentials required for public bucket
-        self.s3_client = boto3.client(
-            "s3", region_name="us-west-2", config=Config(signature_version=UNSIGNED)
-        )
+        # Use centralized S3 client
+        self.s3_client = self.s3_utils.get_client()
 
         # Default spatial index path
         if spatial_index_path is None:
@@ -61,32 +61,19 @@ class PointCloudDatasetFinder:
         """Load the pre-computed spatial index of dataset bounds."""
         try:
             logger.info(f"Loading spatial index from: {self.spatial_index_path}")
-            with open(self.spatial_index_path, "r") as f:
-                data = json.load(f)
+            data = self.json_utils.load_json(self.spatial_index_path)
             datasets = data.get("datasets", [])
             logger.info(f"Loaded spatial index with {len(datasets)} datasets")
             return datasets
-        except FileNotFoundError:
-            raise FileNotFoundError(
-                f"Spatial index file not found: {self.spatial_index_path}"
-            )
-        except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid JSON in spatial index file: {e}")
         except Exception as e:
             raise RuntimeError(f"Failed to load spatial index: {e}")
 
     def geocode_address(self, address: str) -> Tuple[float, float]:
-        """Convert an address to lat/lon coordinates."""
+        """Convert an address to lat/lon coordinates using centralized utils."""
         try:
-            location = self.geolocator.geocode(address)
-            if location:
-                logger.info(
-                    f"Geocoded '{address}' to: {location.latitude}, {location.longitude}"
-                )
-                return location.latitude, location.longitude
-            else:
-                raise ValueError(f"Could not geocode address: {address}")
-        except GeopyError as e:
+            lat, lon = self.geocode_utils.geocode_address(address)
+            return lat, lon
+        except ValueError as e:
             raise ValueError(f"Geocoding failed: {e}")
 
     def find_datasets_for_location(self, lat: float, lon: float) -> List[Dict]:
@@ -168,10 +155,10 @@ class PointCloudDatasetFinder:
                 logger.error(f"Could not retrieve metadata for {dataset_name}")
                 return False
 
-            # Save metadata
-            metadata_path = os.path.join(dataset_dir, "ept.json")
-            with open(metadata_path, "w") as f:
-                json.dump(metadata, f, indent=2)
+            # Save metadata using centralized JSON utilities
+            metadata_path = self.json_utils.save_metadata(
+                metadata, dataset_dir, "ept.json"
+            )
             logger.info(f"Saved EPT metadata to: {metadata_path}")
 
             # Get hierarchy information to understand data structure
@@ -182,9 +169,9 @@ class PointCloudDatasetFinder:
                 )
                 hierarchy = json.loads(response["Body"].read().decode("utf-8"))
 
-                hierarchy_path = os.path.join(dataset_dir, "hierarchy.json")
-                with open(hierarchy_path, "w") as f:
-                    json.dump(hierarchy, f, indent=2)
+                hierarchy_path = self.json_utils.save_metadata(
+                    hierarchy, dataset_dir, "hierarchy.json"
+                )
                 logger.info(f"Saved hierarchy data to: {hierarchy_path}")
 
             except Exception as e:
@@ -290,6 +277,109 @@ class PointCloudDatasetFinder:
             return (not in_state, -year, -d.get("points", 0))
 
         return sorted(datasets, key=sort_key)[0]
+
+    def generate_bounding_box(
+        self, lat: float, lon: float, buffer_km: float = 1.0
+    ) -> str:
+        """Generate a bounding box around coordinates for LiDAR search using centralized utils."""
+        return self.bbox_utils.generate_bounding_box(lat, lon, buffer_km)
+
+    def search_lidar_products(self, bbox: str) -> List[Dict]:
+        """Search for LiDAR products within a bounding box.
+
+        Args:
+            bbox: Bounding box string "min_lon,min_lat,max_lon,max_lat"
+
+        Returns:
+            List of matching datasets
+        """
+        try:
+            bbox_parts = bbox.split(",")
+            if len(bbox_parts) != 4:
+                raise ValueError(f"Invalid bounding box format: {bbox}")
+
+            min_lon, min_lat, max_lon, max_lat = map(float, bbox_parts)
+            logger.info(f"Searching for LiDAR products in bbox: {bbox}")
+
+            # Find center point for dataset search
+            center_lat = (min_lat + max_lat) / 2
+            center_lon = (min_lon + max_lon) / 2
+
+            # Use existing find_datasets_for_location method
+            datasets = self.find_datasets_for_location(center_lat, center_lon)
+
+            logger.info(f"Found {len(datasets)} LiDAR products")
+            return datasets
+
+        except Exception as e:
+            logger.error(f"Error searching LiDAR products: {e}")
+            return []
+
+    def filter_laz_products(self, products: List[Dict]) -> List[Dict]:
+        """Filter products to only include LAZ format data.
+
+        Args:
+            products: List of LiDAR products
+
+        Returns:
+            Filtered list containing only LAZ products
+        """
+        # For now, assume all products support LAZ format since USGS 3DEP data is available as LAZ
+        # In a more complete implementation, this would check format availability
+        laz_products = [p for p in products if p.get("name")]  # Basic validation
+
+        logger.info(
+            f"Filtered to {len(laz_products)} LAZ products from {len(products)} total"
+        )
+        return laz_products
+
+    def download_point_cloud(self, product: Dict, output_dir: str) -> str:
+        """Download point cloud data for a specific product.
+
+        Args:
+            product: Product dictionary containing dataset information
+            output_dir: Directory to save downloaded files
+
+        Returns:
+            Path to downloaded LAZ file
+        """
+        try:
+            dataset_name = product.get("name")
+            if not dataset_name:
+                raise ValueError("Product missing name field")
+
+            logger.info(f"Downloading point cloud data for: {dataset_name}")
+
+            # Create output directory
+            os.makedirs(output_dir, exist_ok=True)
+
+            # For now, use the existing download_dataset method
+            # In production, this would implement more targeted LAZ file download
+            success = self.download_dataset(dataset_name, output_dir)
+
+            if success:
+                # Look for downloaded LAZ files
+                dataset_dir = os.path.join(output_dir, dataset_name.replace("/", "_"))
+                laz_files = []
+                if os.path.exists(dataset_dir):
+                    for root, dirs, files in os.walk(dataset_dir):
+                        laz_files.extend(
+                            [os.path.join(root, f) for f in files if f.endswith(".laz")]
+                        )
+
+                if laz_files:
+                    # Return the first LAZ file found
+                    downloaded_file = laz_files[0]
+                    logger.info(f"Downloaded point cloud: {downloaded_file}")
+                    return downloaded_file
+                else:
+                    raise RuntimeError("No LAZ files found after download")
+            else:
+                raise RuntimeError("Dataset download failed")
+
+        except Exception as e:
+            logger.error(f"Error downloading point cloud: {e}")
+            raise
 
 
 def main():

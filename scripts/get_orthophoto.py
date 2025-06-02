@@ -18,21 +18,7 @@ import sys
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 import requests
-from geocode import Geocoder
-
-
-def geocode_address(address: str) -> Tuple[float, float]:
-    """
-    Convenience function for geocoding.
-
-    Args:
-        address: Street address
-
-    Returns:
-        Tuple of (latitude, longitude)
-    """
-    geocoder = Geocoder()
-    return geocoder.geocode_address(address)
+from utils import GeocodeUtils, BoundingBoxUtils, HTTPUtils, JSONUtils
 
 
 class NAIPFetcher:
@@ -66,12 +52,8 @@ class NAIPFetcher:
             Exception: If the API request fails
         """
         # Create bounding box around the point
-        bbox = [
-            longitude - bbox_size / 2,
-            latitude - bbox_size / 2,
-            longitude + bbox_size / 2,
-            latitude + bbox_size / 2,
-        ]
+        bbox_utils = BoundingBoxUtils()
+        bbox = bbox_utils.create_bbox_from_point(latitude, longitude, bbox_size)
 
         search_params = {
             "collections": [self.collection],
@@ -86,18 +68,15 @@ class NAIPFetcher:
         print(f"Using bounding box: {bbox}")
 
         try:
-            response = requests.post(
-                f"{self.stac_api_url}/search", json=search_params, timeout=30
+            search_results = HTTPUtils.post_json(
+                f"{self.stac_api_url}/search", search_params, timeout=30
             )
-            response.raise_for_status()
-
-            search_results = response.json()
             items = search_results.get("features", [])
 
             print(f"Found {len(items)} NAIP items")
             return items
 
-        except requests.exceptions.RequestException as e:
+        except Exception as e:
             raise Exception(f"Failed to search NAIP items: {e}")
 
     def get_best_item(self, items: List[Dict]) -> Optional[Dict]:
@@ -198,12 +177,7 @@ class NAIPFetcher:
             output_dir: Directory to save the file
             filename: Name of the output file
         """
-        os.makedirs(output_dir, exist_ok=True)
-        filepath = os.path.join(output_dir, filename)
-
-        with open(filepath, "w") as f:
-            json.dump(metadata, f, indent=2, default=str)
-
+        filepath = JSONUtils.save_metadata(metadata, output_dir, filename)
         print(f"Metadata saved to: {filepath}")
 
     def download_orthophoto(self, url: str, output_path: str):
@@ -221,19 +195,10 @@ class NAIPFetcher:
         print(f"Saving to: {output_path}")
 
         try:
-            response = requests.get(url, stream=True, timeout=60)
-            response.raise_for_status()
-
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-
-            with open(output_path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-
+            HTTPUtils.download_file(url, output_path, timeout=60)
             print(f"Successfully downloaded orthophoto to: {output_path}")
 
-        except requests.exceptions.RequestException as e:
+        except Exception as e:
             raise Exception(f"Failed to download orthophoto: {e}")
 
     def get_orthophoto_for_address(
@@ -255,7 +220,8 @@ class NAIPFetcher:
         """
         # Geocode the address
         print(f"Processing address: {address}")
-        latitude, longitude = geocode_address(address)
+        geocoder = GeocodeUtils()
+        latitude, longitude = geocoder.geocode_address(address)
 
         # Search for NAIP items
         items = self.search_naip_items(latitude, longitude)

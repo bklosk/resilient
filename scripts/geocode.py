@@ -12,14 +12,13 @@ Usage:
     lat, lon = geocoder.geocode_address("1250 Wildwood Road, Boulder, CO")
 """
 
-import time
+import sys
 from typing import Tuple
-from geopy.geocoders import Nominatim
-from geopy.exc import GeocoderTimedOut, GeocoderServiceError
+from utils import GeocodeUtils
 
 
 class Geocoder:
-    """Class to handle address geocoding using Nominatim."""
+    """Class to handle address geocoding using Nominatim - streamlined version."""
 
     def __init__(self, user_agent: str = "photogrammetry_geocoder"):
         """
@@ -28,7 +27,7 @@ class Geocoder:
         Args:
             user_agent: User agent string for the geocoding service
         """
-        self.geolocator = Nominatim(user_agent=user_agent)
+        self.geocode_utils = GeocodeUtils()
 
     def geocode_address(
         self, address: str, max_retries: int = 3
@@ -46,27 +45,12 @@ class Geocoder:
         Raises:
             Exception: If geocoding fails after all retries
         """
-        for attempt in range(max_retries):
-            try:
-                print(f"Geocoding address: {address}")
-                location = self.geolocator.geocode(address, timeout=10)
-
-                if location is None:
-                    raise Exception(f"Could not geocode address: {address}")
-
-                lat, lon = location.latitude, location.longitude
-                print(f"Successfully geocoded to: {lat:.6f}, {lon:.6f}")
-                return lat, lon
-
-            except GeocoderTimedOut:
-                print(f"Geocoding timeout, attempt {attempt + 1}/{max_retries}")
-                if attempt < max_retries - 1:
-                    time.sleep(2)  # Wait before retry
-                else:
-                    raise Exception("Geocoding failed after multiple timeout attempts")
-
-            except GeocoderServiceError as e:
-                raise Exception(f"Geocoding service error: {e}")
+        try:
+            lat, lon = self.geocode_utils.geocode_address(address)
+            print(f"Successfully geocoded to: {lat:.6f}, {lon:.6f}")
+            return lat, lon
+        except ValueError as e:
+            raise Exception(str(e))
 
 
 def geocode_address(
@@ -87,8 +71,6 @@ def geocode_address(
 
 
 if __name__ == "__main__":
-    import sys
-
     if len(sys.argv) != 2:
         print("Usage: python geocode.py <address>")
         sys.exit(1)
