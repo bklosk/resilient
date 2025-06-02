@@ -16,6 +16,7 @@ import json
 import os
 import argparse
 import logging
+import math
 from typing import List, Dict, Optional, Tuple
 from pyproj import Transformer
 
@@ -242,9 +243,9 @@ class PointCloudDatasetFinder:
             os.makedirs(dataset_dir, exist_ok=True)
 
             logger.info(
-                f"Downloading point cloud data with orthophoto bounds awareness for: {dataset_name}"
+                f"Downloading point cloud data with geographic filtering for: {dataset_name}"
             )
-            logger.info(f"Orthophoto bounds: {ortho_bounds} (CRS: {ortho_crs})")
+            logger.info(f"Target area bounds: {ortho_bounds} (CRS: {ortho_crs})")
 
             # First, get and save EPT metadata
             logger.info(f"Downloading EPT metadata for {dataset_name}")
@@ -304,17 +305,17 @@ class PointCloudDatasetFinder:
                         "top": ortho_top_ds,
                     }
 
-                    logger.info(f"Orthophoto bounds in dataset CRS: {target_bounds}")
+                    logger.info(f"Target area bounds in dataset CRS: {target_bounds}")
 
                 except Exception as e:
                     logger.warning(
-                        f"Could not transform orthophoto bounds to dataset CRS: {e}"
+                        f"Could not transform target bounds to dataset CRS: {e}"
                     )
                     target_bounds = ortho_bounds
             else:
                 target_bounds = ortho_bounds
 
-            # Check if orthophoto bounds overlap with dataset bounds
+            # Check if target area overlaps with dataset bounds
             ds_xmin, ds_ymin = dataset_bounds[0], dataset_bounds[1]
             ds_xmax, ds_ymax = dataset_bounds[3], dataset_bounds[4]
 
@@ -326,82 +327,328 @@ class PointCloudDatasetFinder:
             )
 
             if not (overlap_x and overlap_y):
-                logger.warning("Orthophoto bounds do not overlap with dataset bounds")
+                logger.warning("Target area does not overlap with dataset bounds")
                 logger.warning(
                     f"Dataset bounds: X[{ds_xmin:.0f}, {ds_xmax:.0f}] Y[{ds_ymin:.0f}, {ds_ymax:.0f}]"
                 )
                 logger.warning(
                     f"Target bounds: X[{target_bounds['left']:.0f}, {target_bounds['right']:.0f}] Y[{target_bounds['bottom']:.0f}, {target_bounds['top']:.0f}]"
                 )
+                logger.info("Falling back to sample tiles from dataset...")
+                return self.download_dataset(dataset_name, output_dir)
+
+            # Download tiles with geographic targeting
+            # Start with deeper levels for finer resolution in the target area
+            successful_files = self._download_geographically_filtered_tiles(
+                dataset_name, dataset_dir, target_bounds, dataset_bounds, metadata
+            )
+
+            if successful_files:
                 logger.info(
-                    "Trying sample tiles from different areas of the dataset..."
-                )
-
-            # Try a broader set of tiles at multiple levels
-            # Level 0: Root tile (covers entire dataset)
-            # Level 1: 8 tiles covering different quadrants
-            # Level 2: More specific tiles if available
-            candidate_tiles = [
-                "0-0-0-0.laz",  # Root tile - always try this first
-                # Level 1 tiles (8 octants)
-                "1-0-0-0.laz",
-                "1-0-0-1.laz",
-                "1-0-1-0.laz",
-                "1-0-1-1.laz",
-                "1-1-0-0.laz",
-                "1-1-0-1.laz",
-                "1-1-1-0.laz",
-                "1-1-1-1.laz",
-                # Level 2 tiles (more specific areas) - try a few from different quadrants
-                "2-0-0-0.laz",
-                "2-0-0-1.laz",
-                "2-1-1-0.laz",
-                "2-1-1-1.laz",
-                "2-0-1-0.laz",
-                "2-0-1-1.laz",
-                "2-1-0-0.laz",
-                "2-1-0-1.laz",
-            ]
-
-            downloaded_count = 0
-            max_downloads = 8  # Try more tiles to increase chance of overlap
-            successful_tiles = []
-
-            for tile in candidate_tiles:
-                if downloaded_count >= max_downloads:
-                    break
-
-                tile_key = f"{dataset_name}/ept-data/{tile}"
-                tile_path = os.path.join(dataset_dir, tile)
-
-                try:
-                    logger.info(f"Downloading tile: {tile}")
-                    self.s3_client.download_file(self.bucket_name, tile_key, tile_path)
-
-                    file_size = os.path.getsize(tile_path)
-                    logger.info(f"Downloaded {tile} ({file_size:,} bytes)")
-                    downloaded_count += 1
-                    successful_tiles.append(tile)
-
-                except Exception as e:
-                    logger.debug(f"Tile {tile} not available: {e}")
-                    continue
-
-            if downloaded_count > 0:
-                logger.info(
-                    f"Successfully downloaded {downloaded_count} data tiles: {successful_tiles}"
+                    f"Successfully downloaded {len(successful_files)} geographically filtered tiles"
                 )
                 logger.info(f"Files saved to: {dataset_dir}")
                 return True
             else:
-                logger.error("No tiles could be downloaded")
-                return False
+                logger.warning("Geographic filtering failed, trying fallback approach")
+                return self.download_dataset(dataset_name, output_dir)
 
         except Exception as e:
             logger.error(
-                f"Failed to download dataset {dataset_name} with orthophoto bounds: {e}"
+                f"Failed to download dataset {dataset_name} with geographic bounds: {e}"
             )
             return False
+
+    def _download_geographically_filtered_tiles(
+        self,
+        dataset_name: str,
+        dataset_dir: str,
+        target_bounds: Dict,
+        dataset_bounds: List,
+        metadata: Dict,
+    ) -> List[str]:
+        """Download EPT tiles that specifically cover the target geographic area.
+
+        Args:
+            dataset_name: Name of the dataset
+            dataset_dir: Directory to save files
+            target_bounds: Target area bounds in dataset CRS
+            dataset_bounds: Full dataset bounds
+            metadata: EPT metadata
+
+        Returns:
+            List of successfully downloaded file paths
+        """
+        successful_files = []
+
+        try:
+            # Load hierarchy data to know which tiles exist
+            hierarchy = {}
+            hierarchy_key = f"{dataset_name}/ept-hierarchy/0-0-0-0.json"
+            try:
+                response = self.s3_client.get_object(
+                    Bucket=self.bucket_name, Key=hierarchy_key
+                )
+                hierarchy = json.loads(response["Body"].read().decode("utf-8"))
+                logger.info(f"Loaded hierarchy with {len(hierarchy)} tiles")
+            except Exception as e:
+                logger.warning(f"Could not download hierarchy data: {e}")
+                # Try to load from local file if it exists
+                hierarchy_path = os.path.join(dataset_dir, "hierarchy.json")
+                if os.path.exists(hierarchy_path):
+                    with open(hierarchy_path, "r") as f:
+                        hierarchy = json.load(f)
+                    logger.info(
+                        f"Loaded hierarchy from local file with {len(hierarchy)} tiles"
+                    )
+
+            if not hierarchy:
+                logger.error("No hierarchy data available for geographic filtering")
+                return successful_files
+
+            # Calculate target area size for appropriate tile level selection
+            target_width = target_bounds["right"] - target_bounds["left"]
+            target_height = target_bounds["top"] - target_bounds["bottom"]
+            target_area = target_width * target_height
+
+            # Dataset dimensions
+            ds_width = dataset_bounds[3] - dataset_bounds[0]  # xmax - xmin
+            ds_height = dataset_bounds[4] - dataset_bounds[1]  # ymax - ymin
+            ds_area = ds_width * ds_height
+
+            # Calculate what tile level we need for good coverage
+            # Each level subdivides by 2 in each dimension (4x area subdivision)
+            area_ratio = target_area / ds_area
+            target_level = max(
+                0, min(8, int(-math.log2(area_ratio) / 2) + 2)
+            )  # Cap at reasonable levels
+
+            logger.info(
+                f"Target area: {target_area:.0f} sq units ({target_width:.0f} x {target_height:.0f})"
+            )
+            logger.info(
+                f"Dataset area: {ds_area:.0f} sq units, area ratio: {area_ratio:.6f}"
+            )
+            logger.info(f"Calculated target tile level: {target_level}")
+
+            # Try multiple tile levels for better coverage
+            levels_to_try = [target_level]
+            if target_level > 0:
+                levels_to_try.append(target_level - 1)  # Coarser level as backup
+            if target_level < 6:
+                levels_to_try.append(target_level + 1)  # Finer level for more detail
+
+            for level in levels_to_try:
+                logger.info(f"Downloading tiles at level {level}...")
+                level_files = self._download_tiles_at_level(
+                    dataset_name,
+                    dataset_dir,
+                    target_bounds,
+                    dataset_bounds,
+                    level,
+                    hierarchy,
+                )
+                successful_files.extend(level_files)
+
+                # If we got good coverage, we can stop
+                if len(successful_files) >= 5:  # Reasonable number of tiles
+                    break
+
+            # Merge tiles if we have multiple small ones
+            if len(successful_files) > 1:
+                merged_file = self._merge_laz_files(successful_files, dataset_dir)
+                if merged_file:
+                    return [merged_file]
+
+            return successful_files
+
+        except Exception as e:
+            logger.error(f"Error in geographic filtering: {e}")
+            return []
+
+    def _download_tiles_at_level(
+        self,
+        dataset_name: str,
+        dataset_dir: str,
+        target_bounds: Dict,
+        dataset_bounds: List,
+        level: int,
+        hierarchy: Dict,
+    ) -> List[str]:
+        """Download all tiles at a specific level that intersect with target bounds."""
+        successful_files = []
+
+        try:
+            # Filter hierarchy for tiles at this level
+            level_tiles = {
+                k: v for k, v in hierarchy.items() if k.startswith(f"{level}-")
+            }
+
+            if not level_tiles:
+                logger.info(f"No tiles available at level {level}")
+                return successful_files
+
+            logger.info(f"Found {len(level_tiles)} tiles at level {level}")
+
+            # Calculate tile grid dimensions at this level
+            tiles_per_side = 2**level
+
+            # Dataset bounds
+            ds_xmin, ds_ymin = dataset_bounds[0], dataset_bounds[1]
+            ds_xmax, ds_ymax = dataset_bounds[3], dataset_bounds[4]
+
+            # Tile dimensions
+            tile_width = (ds_xmax - ds_xmin) / tiles_per_side
+            tile_height = (ds_ymax - ds_ymin) / tiles_per_side
+
+            logger.info(
+                f"Level {level}: {tiles_per_side}x{tiles_per_side} grid, tile size: {tile_width:.0f}x{tile_height:.0f}"
+            )
+
+            # Find target tile range based on bounds
+            start_col = max(0, int((target_bounds["left"] - ds_xmin) / tile_width))
+            end_col = min(
+                tiles_per_side - 1, int((target_bounds["right"] - ds_xmin) / tile_width)
+            )
+            start_row = max(0, int((target_bounds["bottom"] - ds_ymin) / tile_height))
+            end_row = min(
+                tiles_per_side - 1, int((target_bounds["top"] - ds_ymin) / tile_height)
+            )
+
+            logger.info(
+                f"Target tile range: cols {start_col}-{end_col}, rows {start_row}-{end_row}"
+            )
+
+            downloaded_count = 0
+            max_tiles = 50  # Increased limit for better coverage
+            total_points = 0
+
+            # Download tiles that exist in hierarchy and intersect target area
+            for tile_name, point_count in level_tiles.items():
+                if downloaded_count >= max_tiles:
+                    break
+
+                # Parse tile coordinates
+                parts = tile_name.split("-")
+                if len(parts) != 4:
+                    continue
+
+                try:
+                    level_num, col, row, z = map(int, parts)
+
+                    # Check if tile intersects with target area
+                    if start_col <= col <= end_col and start_row <= row <= end_row:
+                        tile_key = f"{dataset_name}/ept-data/{tile_name}.laz"
+                        tile_path = os.path.join(dataset_dir, f"{tile_name}.laz")
+
+                        try:
+                            logger.debug(
+                                f"Downloading tile: {tile_name} ({point_count:,} points)"
+                            )
+                            self.s3_client.download_file(
+                                self.bucket_name, tile_key, tile_path
+                            )
+
+                            file_size = os.path.getsize(tile_path)
+                            logger.info(
+                                f"Downloaded {tile_name}.laz ({file_size:,} bytes, {point_count:,} points)"
+                            )
+                            successful_files.append(tile_path)
+                            downloaded_count += 1
+                            total_points += point_count
+
+                        except Exception as e:
+                            logger.debug(f"Tile {tile_name} not available: {e}")
+
+                except ValueError:
+                    continue
+
+            logger.info(
+                f"Downloaded {downloaded_count} tiles at level {level} with {total_points:,} total points"
+            )
+
+        except Exception as e:
+            logger.error(f"Error downloading tiles at level {level}: {e}")
+
+        return successful_files
+
+    def _merge_laz_files(self, laz_files: List[str], output_dir: str) -> Optional[str]:
+        """Merge multiple LAZ files into a single file for processing."""
+        try:
+            import laspy
+            import numpy as np
+
+            if len(laz_files) <= 1:
+                return laz_files[0] if laz_files else None
+
+            logger.info(f"Merging {len(laz_files)} LAZ files...")
+
+            # Read all files and combine points
+            all_points = []
+            total_points = 0
+
+            for laz_file in laz_files:
+                try:
+                    las_data = laspy.read(laz_file)
+                    if len(las_data.points) > 0:
+                        all_points.append(las_data)
+                        total_points += len(las_data.points)
+                        logger.debug(
+                            f"Read {len(las_data.points):,} points from {os.path.basename(laz_file)}"
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to read {laz_file}: {e}")
+                    continue
+
+            if not all_points:
+                logger.error("No valid points found in any LAZ file")
+                return None
+
+            logger.info(f"Total points to merge: {total_points:,}")
+
+            # Create merged file using the first file as template
+            header = all_points[0].header
+            merged_las = laspy.LasData(header)
+
+            # Combine coordinates and attributes
+            x_coords = np.concatenate([las.x for las in all_points])
+            y_coords = np.concatenate([las.y for las in all_points])
+            z_coords = np.concatenate([las.z for las in all_points])
+
+            merged_las.x = x_coords
+            merged_las.y = y_coords
+            merged_las.z = z_coords
+
+            # Copy other attributes if they exist
+            for attr in [
+                "intensity",
+                "return_number",
+                "number_of_returns",
+                "classification",
+            ]:
+                if hasattr(all_points[0], attr):
+                    try:
+                        values = np.concatenate(
+                            [getattr(las, attr) for las in all_points]
+                        )
+                        setattr(merged_las, attr, values)
+                    except Exception as e:
+                        logger.debug(f"Could not merge attribute {attr}: {e}")
+
+            # Save merged file
+            merged_path = os.path.join(output_dir, "merged_tiles.laz")
+            merged_las.write(merged_path)
+
+            file_size = os.path.getsize(merged_path) / (1024 * 1024)  # MB
+            logger.info(
+                f"Merged file saved: {merged_path} ({file_size:.1f} MB, {total_points:,} points)"
+            )
+
+            return merged_path
+
+        except Exception as e:
+            logger.error(f"Failed to merge LAZ files: {e}")
+            return None
 
     def list_available_datasets(self, datasets: List[Dict]) -> None:
         """Display information about available datasets."""
@@ -480,7 +727,6 @@ class PointCloudDatasetFinder:
         Returns:
             Best matching dataset
         """
-        import math
         from pyproj import Transformer, CRS
 
         if not datasets:
@@ -681,7 +927,6 @@ class PointCloudDatasetFinder:
         Returns:
             Best matching dataset
         """
-        import math
         from pyproj import Transformer, CRS
 
         if not datasets:
