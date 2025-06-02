@@ -278,6 +278,484 @@ class PointCloudDatasetFinder:
 
         return sorted(datasets, key=sort_key)[0]
 
+    def select_best_dataset_for_location(
+        self, datasets: List[Dict], lat: float, lon: float
+    ) -> Dict:
+        """
+        Select the best dataset for a given location using improved criteria.
+
+        Prioritizes:
+        1. Geographic proximity (closest distance to dataset center)
+        2. Regional specificity (metropolitan vs. broad regional datasets)
+        3. Recency (newer datasets preferred)
+        4. Data quality (more points = better)
+        5. State/region matching
+
+        Args:
+            datasets: List of available datasets
+            lat: Target latitude
+            lon: Target longitude
+
+        Returns:
+            Best matching dataset
+        """
+        import math
+        from pyproj import Transformer, CRS
+
+        if not datasets:
+            raise ValueError("No datasets provided")
+
+        logger.info(
+            f"Evaluating {len(datasets)} datasets for location {lat:.6f}, {lon:.6f}"
+        )
+
+        # Transform target coordinates to Web Mercator for distance calculations
+        wgs84_to_mercator = Transformer.from_crs(
+            CRS.from_epsg(4326), CRS.from_epsg(3857), always_xy=True
+        )
+        target_x, target_y = wgs84_to_mercator.transform(lon, lat)
+
+        scored_datasets = []
+
+        for dataset in datasets:
+            name = dataset.get("name", "")
+            bounds = dataset.get("bounds", [])
+            points = dataset.get("points", 0)
+
+            # Calculate geographic proximity score
+            distance_score = float("inf")  # Default to infinite distance
+            dataset_area = 0  # Dataset coverage area
+
+            if bounds and len(bounds) >= 4:
+                # Calculate dataset center and area in Web Mercator
+                if len(bounds) == 6:  # [xmin, ymin, zmin, xmax, ymax, zmax]
+                    xmin, ymin, xmax, ymax = bounds[0], bounds[1], bounds[3], bounds[4]
+                else:  # [xmin, ymin, xmax, ymax]
+                    xmin, ymin, xmax, ymax = bounds[0], bounds[1], bounds[2], bounds[3]
+
+                center_x = (xmin + xmax) / 2
+                center_y = (ymin + ymax) / 2
+                dataset_area = (xmax - xmin) * (ymax - ymin)  # Area in square meters
+
+                # Calculate distance in meters
+                distance = math.sqrt(
+                    (target_x - center_x) ** 2 + (target_y - center_y) ** 2
+                )
+                distance_score = distance  # Lower is better
+
+            # Extract year from dataset name
+            year = 0
+            for part in name.split("_"):
+                if part.isdigit() and len(part) == 4:
+                    try:
+                        year = int(part)
+                        break
+                    except ValueError:
+                        continue
+
+            # Calculate recency score (higher is better)
+            current_year = 2025  # Update as needed
+            recency_score = year if year > 0 else 1900
+
+            # Calculate quality score based on point count (log scale to prevent overwhelming)
+            quality_score = math.log10(max(points, 1))
+
+            # Regional specificity bonus - prefer smaller, more focused datasets over broad regional ones
+            # This helps choose metropolitan datasets (like DRCOG) over state-wide datasets (like NWCO)
+            specificity_bonus = 0
+            if dataset_area > 0:
+                # Convert area to km²
+                area_km2 = dataset_area / 1_000_000
+                # Prefer datasets with smaller coverage areas (more specific)
+                # Use logarithmic scale to prevent overwhelming the score
+                specificity_bonus = max(0, 100 - math.log10(max(area_km2, 1)) * 20)
+
+            # Regional keyword matching for better geographic classification
+            region_bonus = 0
+            name_upper = name.upper()
+
+            # Check for Front Range/Denver metro area keywords (good for Boulder)
+            front_range_keywords = [
+                "DRCOG",
+                "DENVER",
+                "METRO",
+                "FRONT",
+                "BOULDER",
+                "JEFFCO",
+                "ADAMS",
+            ]
+            # Check for broader regional keywords (less specific)
+            broad_keywords = [
+                "NWCO",
+                "SWCO",
+                "NECO",
+                "SECO",
+                "CENTRAL",
+                "WESTERN",
+                "EASTERN",
+                "NORTHERN",
+                "SOUTHERN",
+            ]
+
+            # Bonus for Front Range/metro area datasets when in Colorado Front Range
+            if 39.5 <= lat <= 40.5 and -105.5 <= lon <= -104.5:  # Front Range area
+                if any(keyword in name_upper for keyword in front_range_keywords):
+                    region_bonus = 500  # Strong preference for metro datasets
+                elif any(keyword in name_upper for keyword in broad_keywords):
+                    region_bonus = -200  # Slight penalty for broad regional datasets
+
+            # State/region matching
+            state_bonus = 0
+            if (
+                lat >= 39 and lat <= 41 and lon >= -109 and lon <= -102
+            ):  # Colorado bounds
+                if "CO" in name_upper:
+                    state_bonus = 300  # Moderate bonus for Colorado datasets
+
+            # Composite score with improved weighting
+            # Normalize distance to km and weight factors appropriately
+            distance_penalty = (
+                distance_score / 1000 if distance_score != float("inf") else 1000
+            )
+            recency_bonus = (recency_score - 2000) * 8  # Reduced weight for recency
+            quality_bonus = quality_score * 3  # Reduced weight for quality
+
+            composite_score = (
+                -distance_penalty * 2  # Distance is most important (doubled weight)
+                + recency_bonus
+                + quality_bonus
+                + specificity_bonus
+                + region_bonus
+                + state_bonus
+            )
+
+            scored_datasets.append(
+                {
+                    "dataset": dataset,
+                    "score": composite_score,
+                    "distance_km": (
+                        distance_score / 1000
+                        if distance_score != float("inf")
+                        else float("inf")
+                    ),
+                    "area_km2": dataset_area / 1_000_000 if dataset_area > 0 else 0,
+                    "year": year,
+                    "points": points,
+                    "name": name,
+                    "specificity_bonus": specificity_bonus,
+                    "region_bonus": region_bonus,
+                }
+            )
+
+            logger.debug(
+                f"Dataset {name}: distance={distance_score/1000:.1f}km, area={dataset_area/1_000_000:.0f}km², "
+                f"year={year}, points={points:,}, specificity={specificity_bonus:.1f}, "
+                f"region={region_bonus:.1f}, score={composite_score:.1f}"
+            )
+
+        # Sort by score (highest first)
+        scored_datasets.sort(key=lambda x: x["score"], reverse=True)
+
+        # Log top candidates with enhanced details
+        logger.info("Top 5 dataset candidates:")
+        for i, item in enumerate(scored_datasets[:5]):
+            logger.info(f"  {i+1}. {item['name']}")
+            logger.info(
+                f"     Distance: {item['distance_km']:.1f}km, Area: {item['area_km2']:.0f}km², "
+                f"Year: {item['year']}, Points: {item['points']:,}"
+            )
+            logger.info(
+                f"     Bonuses - Specificity: {item['specificity_bonus']:.1f}, "
+                f"Region: {item['region_bonus']:.1f}"
+            )
+            logger.info(f"     Total Score: {item['score']:.1f}")
+            logger.info("")  # Empty line for readability
+
+        best_dataset = scored_datasets[0]["dataset"]
+        logger.info(f"Selected best dataset: {best_dataset.get('name', 'Unknown')}")
+
+        return best_dataset
+
+    def select_best_dataset_for_orthophoto(
+        self,
+        datasets: List[Dict],
+        ortho_bounds: Dict,
+        ortho_crs: str,
+        lat: float,
+        lon: float,
+    ) -> Dict:
+        """
+        Select the best dataset for a given location considering orthophoto coverage.
+
+        This method prioritizes datasets that overlap with the orthophoto bounds,
+        ensuring better coordinate alignment between point cloud and orthophoto.
+
+        Args:
+            datasets: List of available datasets
+            ortho_bounds: Orthophoto bounds dict with keys: left, right, bottom, top
+            ortho_crs: Orthophoto coordinate reference system
+            lat: Target latitude
+            lon: Target longitude
+
+        Returns:
+            Best matching dataset
+        """
+        import math
+        from pyproj import Transformer, CRS
+
+        if not datasets:
+            raise ValueError("No datasets provided")
+
+        logger.info(
+            f"Evaluating {len(datasets)} datasets for orthophoto coverage at {lat:.6f}, {lon:.6f}"
+        )
+        logger.info(f"Orthophoto bounds: {ortho_bounds} (CRS: {ortho_crs})")
+
+        # Transform orthophoto bounds to Web Mercator for comparison
+        try:
+            ortho_to_mercator = Transformer.from_crs(
+                CRS.from_string(ortho_crs), CRS.from_epsg(3857), always_xy=True
+            )
+
+            # Transform corners of orthophoto to Web Mercator
+            left_merc, bottom_merc = ortho_to_mercator.transform(
+                ortho_bounds["left"], ortho_bounds["bottom"]
+            )
+            right_merc, top_merc = ortho_to_mercator.transform(
+                ortho_bounds["right"], ortho_bounds["top"]
+            )
+
+            ortho_bounds_mercator = {
+                "left": left_merc,
+                "right": right_merc,
+                "bottom": bottom_merc,
+                "top": top_merc,
+            }
+
+            logger.info(f"Orthophoto bounds in Web Mercator: {ortho_bounds_mercator}")
+
+        except Exception as e:
+            logger.warning(f"Could not transform orthophoto bounds: {e}")
+            # Fall back to original method
+            return self.select_best_dataset_for_location(datasets, lat, lon)
+
+        scored_datasets = []
+
+        for dataset in datasets:
+            name = dataset.get("name", "")
+            bounds = dataset.get("bounds", [])
+            points = dataset.get("points", 0)
+
+            # Calculate overlap with orthophoto
+            overlap_score = 0
+            distance_score = float("inf")
+
+            if bounds and len(bounds) >= 4:
+                # Dataset bounds in Web Mercator
+                if len(bounds) == 6:  # [xmin, ymin, zmin, xmax, ymax, zmax]
+                    ds_xmin, ds_ymin, ds_xmax, ds_ymax = (
+                        bounds[0],
+                        bounds[1],
+                        bounds[3],
+                        bounds[4],
+                    )
+                else:  # [xmin, ymin, xmax, ymax]
+                    ds_xmin, ds_ymin, ds_xmax, ds_ymax = (
+                        bounds[0],
+                        bounds[1],
+                        bounds[2],
+                        bounds[3],
+                    )
+
+                # Calculate overlap area
+                overlap_left = max(ds_xmin, ortho_bounds_mercator["left"])
+                overlap_right = min(ds_xmax, ortho_bounds_mercator["right"])
+                overlap_bottom = max(ds_ymin, ortho_bounds_mercator["bottom"])
+                overlap_top = min(ds_ymax, ortho_bounds_mercator["top"])
+
+                if overlap_left < overlap_right and overlap_bottom < overlap_top:
+                    # There is overlap
+                    overlap_area = (overlap_right - overlap_left) * (
+                        overlap_top - overlap_bottom
+                    )
+                    ortho_area = (
+                        ortho_bounds_mercator["right"] - ortho_bounds_mercator["left"]
+                    ) * (ortho_bounds_mercator["top"] - ortho_bounds_mercator["bottom"])
+                    overlap_percentage = (
+                        overlap_area / ortho_area if ortho_area > 0 else 0
+                    )
+                    overlap_score = overlap_percentage * 10000  # Scale up for scoring
+
+                    logger.debug(
+                        f"Dataset {name}: overlap {overlap_percentage:.1%} of orthophoto"
+                    )
+                else:
+                    # No overlap, calculate distance between centers
+                    ds_center_x = (ds_xmin + ds_xmax) / 2
+                    ds_center_y = (ds_ymin + ds_ymax) / 2
+                    ortho_center_x = (
+                        ortho_bounds_mercator["left"] + ortho_bounds_mercator["right"]
+                    ) / 2
+                    ortho_center_y = (
+                        ortho_bounds_mercator["bottom"] + ortho_bounds_mercator["top"]
+                    ) / 2
+
+                    distance = math.sqrt(
+                        (ds_center_x - ortho_center_x) ** 2
+                        + (ds_center_y - ortho_center_y) ** 2
+                    )
+                    distance_score = distance
+
+            # Extract year from dataset name
+            year = 0
+            for part in name.split("_"):
+                if part.isdigit() and len(part) == 4:
+                    try:
+                        year = int(part)
+                        break
+                    except ValueError:
+                        continue
+
+            # Calculate scores
+            recency_score = year if year > 0 else 1900
+            quality_score = math.log10(max(points, 1))
+
+            # Calculate dataset area for specificity bonus
+            dataset_area = 0
+            if bounds and len(bounds) >= 4:
+                if len(bounds) == 6:  # [xmin, ymin, zmin, xmax, ymax, zmax]
+                    xmin, ymin, xmax, ymax = bounds[0], bounds[1], bounds[3], bounds[4]
+                else:  # [xmin, ymin, xmax, ymax]
+                    xmin, ymin, xmax, ymax = bounds[0], bounds[1], bounds[2], bounds[3]
+                dataset_area = (xmax - xmin) * (ymax - ymin)  # Area in square meters
+
+            # Regional specificity bonus - prefer smaller, more focused datasets
+            specificity_bonus = 0
+            if dataset_area > 0:
+                area_km2 = dataset_area / 1_000_000
+                specificity_bonus = max(0, 100 - math.log10(max(area_km2, 1)) * 20)
+
+            # Regional keyword matching for better geographic classification
+            region_bonus = 0
+            name_upper = name.upper()
+
+            # Check for Front Range/Denver metro area keywords (good for Boulder)
+            front_range_keywords = [
+                "DRCOG",
+                "DENVER",
+                "METRO",
+                "FRONT",
+                "BOULDER",
+                "JEFFCO",
+                "ADAMS",
+            ]
+            # Check for broader regional keywords (less specific)
+            broad_keywords = [
+                "NWCO",
+                "SWCO",
+                "NECO",
+                "SECO",
+                "CENTRAL",
+                "WESTERN",
+                "EASTERN",
+                "NORTHERN",
+                "SOUTHERN",
+            ]
+
+            # Bonus for Front Range/metro area datasets when in Colorado Front Range
+            if 39.5 <= lat <= 40.5 and -105.5 <= lon <= -104.5:  # Front Range area
+                if any(keyword in name_upper for keyword in front_range_keywords):
+                    region_bonus = 500  # Strong preference for metro datasets
+                elif any(keyword in name_upper for keyword in broad_keywords):
+                    region_bonus = -200  # Penalty for broad regional datasets
+
+            # State/region bonus
+            state_bonus = 0
+            if (
+                lat >= 39 and lat <= 41 and lon >= -109 and lon <= -102
+            ):  # Colorado bounds
+                if "CO" in name.upper():
+                    state_bonus = 300
+
+            # Composite score - balance overlap with geographic appropriateness
+            if overlap_score > 0:
+                # If there's overlap, use balanced scoring that considers geographic appropriateness
+                distance_penalty = (
+                    distance_score / 1000 if distance_score != float("inf") else 0
+                )
+                recency_bonus = (recency_score - 2000) * 8
+                quality_bonus = (
+                    quality_score * 3
+                )  # Reduced weight to prevent domination
+
+                composite_score = (
+                    overlap_score * 10  # Moderate weight for overlap
+                    + -distance_penalty * 2  # Distance penalty (doubled weight)
+                    + recency_bonus
+                    + quality_bonus
+                    + specificity_bonus
+                    + region_bonus
+                    + state_bonus
+                )
+            else:
+                # If no overlap, use distance-based scoring (heavily penalized)
+                distance_penalty = distance_score / 1000
+                composite_score = (
+                    -(distance_penalty * 10)
+                    + (recency_score - 2000) * 10
+                    + quality_score * 5
+                    + state_bonus
+                )
+
+            scored_datasets.append(
+                {
+                    "dataset": dataset,
+                    "score": composite_score,
+                    "overlap_score": overlap_score,
+                    "distance_km": (
+                        distance_score / 1000
+                        if distance_score != float("inf")
+                        else float("inf")
+                    ),
+                    "area_km2": dataset_area / 1_000_000 if dataset_area > 0 else 0,
+                    "year": year,
+                    "points": points,
+                    "name": name,
+                    "specificity_bonus": specificity_bonus,
+                    "region_bonus": region_bonus,
+                }
+            )
+
+        # Sort by score (highest first)
+        scored_datasets.sort(key=lambda x: x["score"], reverse=True)
+
+        # Log top candidates with enhanced details
+        logger.info("Top 3 dataset candidates (considering orthophoto overlap):")
+        for i, item in enumerate(scored_datasets[:3]):
+            logger.info(f"  {i+1}. {item['name']}")
+            if item["overlap_score"] > 0:
+                logger.info(
+                    f"     Overlap: {item['overlap_score']/100:.1f}% of orthophoto"
+                )
+            else:
+                logger.info(
+                    f"     Distance: {item['distance_km']:.1f}km from orthophoto center"
+                )
+            logger.info(
+                f"     Area: {item['area_km2']:.0f}km², Year: {item['year']}, Points: {item['points']:,}"
+            )
+            logger.info(
+                f"     Bonuses - Specificity: {item['specificity_bonus']:.1f}, "
+                f"Region: {item['region_bonus']:.1f}"
+            )
+            logger.info(f"     Score: {item['score']:.1f}")
+            logger.info("")  # Empty line for readability
+
+        best_dataset = scored_datasets[0]["dataset"]
+        logger.info(f"Selected best dataset: {best_dataset.get('name', 'Unknown')}")
+
+        return best_dataset
+
     def generate_bounding_box(
         self, lat: float, lon: float, buffer_km: float = 1.0
     ) -> str:

@@ -30,6 +30,9 @@ import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 
+# Add the scripts directory to the path for local imports
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -189,7 +192,42 @@ class PointCloudColorizer:
             source_crs = self.detect_point_cloud_crs(las_data)
 
         if source_crs is None:
-            raise ValueError("Cannot determine point cloud CRS")
+            # Enhanced fallback: Analyze coordinate ranges to guess CRS
+            x_min, x_max = np.min(x_coords), np.max(x_coords)
+            y_min, y_max = np.min(y_coords), np.max(y_coords)
+
+            logger.warning(f"CRS detection failed. Analyzing coordinate ranges:")
+            logger.warning(
+                f"X: {x_min:.2f} to {x_max:.2f}, Y: {y_min:.2f} to {y_max:.2f}"
+            )
+
+            # Heuristic: Large negative X values and large positive Y values suggest Web Mercator
+            if (
+                x_min < -1000000
+                and abs(x_min) < 20037508
+                and y_min > 1000000
+                and y_max < 20037508
+            ):
+                source_crs = "EPSG:3857"
+                logger.info(
+                    f"Fallback: Assuming Web Mercator (EPSG:3857) based on coordinate ranges"
+                )
+            # Geographic coordinates
+            elif -180 <= x_min <= 180 and -90 <= y_min <= 90:
+                source_crs = "EPSG:4326"
+                logger.info(
+                    f"Fallback: Assuming WGS84 (EPSG:4326) based on coordinate ranges"
+                )
+            # UTM-like coordinates
+            elif 100000 < x_min < 900000 and 1000000 < y_min < 10000000:
+                source_crs = "EPSG:26913"  # Assume UTM Zone 13N for western US
+                logger.info(
+                    f"Fallback: Assuming UTM Zone 13N (EPSG:26913) based on coordinate ranges"
+                )
+            else:
+                raise ValueError(
+                    f"Cannot determine point cloud CRS. Coordinate ranges: X[{x_min:.0f}, {x_max:.0f}], Y[{y_min:.0f}, {y_max:.0f}]"
+                )
 
         logger.info(f"Transforming coordinates: {source_crs} -> {ortho_crs}")
 
@@ -373,8 +411,110 @@ class PointCloudColorizer:
             las_data, ortho_crs, source_crs
         )
 
-        # Create diagnostic plot only if requested
-        if self.create_diagnostics:
+        # Enhanced debugging: Print coordinate ranges and bounds
+        logger.info("=== COORDINATE ANALYSIS ===")
+        logger.info(f"Orthophoto CRS: {ortho_crs}")
+        logger.info(f"Orthophoto bounds: {ortho_dataset.bounds}")
+
+        # Point cloud bounds in transformed coordinates
+        pc_x_min, pc_x_max = np.min(transformed_x), np.max(transformed_x)
+        pc_y_min, pc_y_max = np.min(transformed_y), np.max(transformed_y)
+        logger.info(
+            f"Point cloud bounds (transformed): X[{pc_x_min:.2f}, {pc_x_max:.2f}], Y[{pc_y_min:.2f}, {pc_y_max:.2f}]"
+        )
+
+        # Calculate distances between centers
+        ortho_center_x = (ortho_dataset.bounds.left + ortho_dataset.bounds.right) / 2
+        ortho_center_y = (ortho_dataset.bounds.bottom + ortho_dataset.bounds.top) / 2
+        pc_center_x = (pc_x_min + pc_x_max) / 2
+        pc_center_y = (pc_y_min + pc_y_max) / 2
+
+        distance_x = abs(ortho_center_x - pc_center_x)
+        distance_y = abs(ortho_center_y - pc_center_y)
+        logger.info(
+            f"Distance between centers: X={distance_x:.2f}m, Y={distance_y:.2f}m"
+        )
+
+        # Check for overlap
+        overlap_x = not (
+            pc_x_max < ortho_dataset.bounds.left
+            or pc_x_min > ortho_dataset.bounds.right
+        )
+        overlap_y = not (
+            pc_y_max < ortho_dataset.bounds.bottom
+            or pc_y_min > ortho_dataset.bounds.top
+        )
+        logger.info(f"Bounds overlap: X={overlap_x}, Y={overlap_y}")
+
+        # If there's no overlap, try alternative CRS transformations
+        if not (overlap_x and overlap_y):
+            logger.warning(
+                "No coordinate overlap detected. Attempting CRS correction..."
+            )
+
+            # Try transforming orthophoto bounds to point cloud's original CRS for comparison
+            original_x_coords = las_data.x
+            original_y_coords = las_data.y
+            orig_x_min, orig_x_max = np.min(original_x_coords), np.max(
+                original_x_coords
+            )
+            orig_y_min, orig_y_max = np.min(original_y_coords), np.max(
+                original_y_coords
+            )
+
+            # Detect or assume point cloud CRS
+            pc_crs = source_crs or self.detect_point_cloud_crs(las_data)
+            if pc_crs is None:
+                pc_crs = "EPSG:3857"  # Default fallback based on error log
+
+            logger.info(f"Original point cloud CRS: {pc_crs}")
+            logger.info(
+                f"Original point cloud bounds: X[{orig_x_min:.2f}, {orig_x_max:.2f}], Y[{orig_y_min:.2f}, {orig_y_max:.2f}]"
+            )
+
+            # Try transforming orthophoto bounds to point cloud CRS
+            try:
+                ortho_to_pc_transformer = Transformer.from_crs(
+                    CRS.from_string(ortho_crs), CRS.from_string(pc_crs), always_xy=True
+                )
+
+                # Transform the four corners of the orthophoto bounds
+                ortho_left, ortho_bottom = ortho_to_pc_transformer.transform(
+                    ortho_dataset.bounds.left, ortho_dataset.bounds.bottom
+                )
+                ortho_right, ortho_top = ortho_to_pc_transformer.transform(
+                    ortho_dataset.bounds.right, ortho_dataset.bounds.top
+                )
+
+                logger.info(
+                    f"Orthophoto bounds in point cloud CRS: [{ortho_left:.2f}, {ortho_bottom:.2f}, {ortho_right:.2f}, {ortho_top:.2f}]"
+                )
+
+                # Check overlap in original coordinate space
+                ortho_pc_overlap_x = not (
+                    orig_x_max < ortho_left or orig_x_min > ortho_right
+                )
+                ortho_pc_overlap_y = not (
+                    orig_y_max < ortho_bottom or orig_y_min > ortho_top
+                )
+
+                logger.info(
+                    f"Overlap in original PC CRS: X={ortho_pc_overlap_x}, Y={ortho_pc_overlap_y}"
+                )
+
+                if not (ortho_pc_overlap_x and ortho_pc_overlap_y):
+                    logger.error(
+                        "Point cloud and orthophoto do not overlap in any tested coordinate system!"
+                    )
+                    logger.error(
+                        "This suggests they are from different geographic areas."
+                    )
+
+            except Exception as e:
+                logger.warning(f"Could not transform orthophoto bounds to PC CRS: {e}")
+
+        # Create diagnostic plot if requested or if there's coordinate issues
+        if self.create_diagnostics or not (overlap_x and overlap_y):
             self.create_alignment_diagnostic(
                 las_data, ortho_dataset, transformed_x, transformed_y
             )
@@ -406,6 +546,57 @@ class PointCloudColorizer:
 
         if num_valid == 0:
             logger.error("No points fall within orthophoto bounds!")
+
+            # Try a buffered approach - expand the search area
+            logger.info("Attempting buffered coordinate matching...")
+
+            # Calculate buffer distance as a percentage of the dataset size
+            ortho_width = ortho_dataset.bounds.right - ortho_dataset.bounds.left
+            ortho_height = ortho_dataset.bounds.top - ortho_dataset.bounds.bottom
+            buffer_distance = min(ortho_width, ortho_height) * 0.1  # 10% buffer
+
+            logger.info(f"Using buffer distance: {buffer_distance:.2f} meters")
+
+            # Expand orthophoto bounds
+            buffered_bounds = {
+                "left": ortho_dataset.bounds.left - buffer_distance,
+                "right": ortho_dataset.bounds.right + buffer_distance,
+                "bottom": ortho_dataset.bounds.bottom - buffer_distance,
+                "top": ortho_dataset.bounds.top + buffer_distance,
+            }
+
+            # Re-check with buffered bounds
+            buffered_valid_mask = (
+                (transformed_x >= buffered_bounds["left"])
+                & (transformed_x <= buffered_bounds["right"])
+                & (transformed_y >= buffered_bounds["bottom"])
+                & (transformed_y <= buffered_bounds["top"])
+            )
+
+            num_buffered_valid = np.sum(buffered_valid_mask)
+            logger.info(
+                f"Points within buffered area: {num_buffered_valid:,}/{total_points:,}"
+            )
+
+            if num_buffered_valid > 0:
+                logger.warning(
+                    f"Found {num_buffered_valid} points near orthophoto bounds but outside exact bounds."
+                )
+                logger.warning(
+                    "This suggests coordinate system issues or small misalignment."
+                )
+
+                # For these points, we'll need to use interpolation or nearest neighbor
+                # For now, let's create a diagnostic message and continue with the error
+                logger.error(
+                    "Consider using a larger orthophoto area or check coordinate system alignment."
+                )
+            else:
+                logger.error("No points found even with buffered search area.")
+                logger.error(
+                    "Point cloud and orthophoto appear to be from completely different locations."
+                )
+
             raise ValueError("No points within orthophoto bounds")
 
         # Initialize color array
@@ -542,7 +733,12 @@ class PointCloudColorizer:
         logger.info(f"Saved colorized point cloud ({file_size:.1f} MB)")
 
     def _fetch_point_cloud_data(
-        self, pc_fetcher: "PointCloudDatasetFinder", lat: float, lon: float
+        self,
+        pc_fetcher: "PointCloudDatasetFinder",
+        lat: float,
+        lon: float,
+        ortho_bounds: Optional[Dict] = None,
+        ortho_crs: Optional[str] = None,
     ) -> str:
         """
         Fetch point cloud data for given coordinates with retry logic.
@@ -551,6 +747,8 @@ class PointCloudColorizer:
             pc_fetcher: Point cloud fetcher instance
             lat: Latitude
             lon: Longitude
+            ortho_bounds: Optional orthophoto bounds for better dataset selection
+            ortho_crs: Optional orthophoto CRS
 
         Returns:
             Path to downloaded point cloud file
@@ -586,19 +784,35 @@ class PointCloudColorizer:
 
             logger.info(f"Found {len(laz_products)} LAZ products")
 
+            # Select the best dataset using improved selection logic
+            logger.info("Selecting best dataset based on location and recency...")
+            if ortho_bounds and ortho_crs:
+                logger.info("Using orthophoto-aware dataset selection...")
+                best_product = pc_fetcher.select_best_dataset_for_orthophoto(
+                    laz_products, ortho_bounds, ortho_crs, lat, lon
+                )
+            else:
+                best_product = pc_fetcher.select_best_dataset_for_location(
+                    laz_products, lat, lon
+                )
+
+            logger.info(f"Selected dataset: {best_product.get('name', 'Unknown')}")
+
             # Try downloading point cloud with retry logic
             max_retries = 3
             retry_delay = 5  # seconds
 
             for attempt in range(max_retries):
                 try:
-                    product_title = laz_products[0].get("title", "Unknown product")
+                    product_title = best_product.get(
+                        "title", best_product.get("name", "Unknown product")
+                    )
                     logger.info(
                         f"Attempting to download (attempt {attempt + 1}/{max_retries}): {product_title}"
                     )
 
                     downloaded_pc = pc_fetcher.download_point_cloud(
-                        laz_products[0], str(self.output_dir)
+                        best_product, str(self.output_dir)
                     )
 
                     if downloaded_pc and Path(downloaded_pc).exists():
@@ -714,66 +928,34 @@ class PointCloudColorizer:
             lat, lon = geocoder.geocode_address(address)
             logger.info(f"Coordinates: {lat:.6f}, {lon:.6f}")
 
-            # Fetch point cloud and orthophoto in parallel with timeout
-            logger.info("Starting parallel fetch of point cloud and orthophoto...")
+            # First, fetch orthophoto to get bounds for better point cloud selection
+            logger.info("Fetching orthophoto first for optimal dataset selection...")
+            ortho_path = self._fetch_orthophoto_data(ortho_fetcher, address, lat, lon)
+            logger.info("Orthophoto fetch completed successfully")
 
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                # Submit both tasks
-                pc_future = executor.submit(
-                    self._fetch_point_cloud_data, pc_fetcher, lat, lon
-                )
-                ortho_future = executor.submit(
-                    self._fetch_orthophoto_data, ortho_fetcher, address, lat, lon
-                )
+            # Get orthophoto bounds for dataset selection
+            ortho_bounds = None
+            ortho_crs = None
+            try:
+                with rasterio.open(ortho_path) as ortho_dataset:
+                    ortho_bounds = {
+                        "left": ortho_dataset.bounds.left,
+                        "right": ortho_dataset.bounds.right,
+                        "bottom": ortho_dataset.bounds.bottom,
+                        "top": ortho_dataset.bounds.top,
+                    }
+                    ortho_crs = str(ortho_dataset.crs)
+                    logger.info(f"Orthophoto bounds extracted: {ortho_bounds}")
+                    logger.info(f"Orthophoto CRS: {ortho_crs}")
+            except Exception as e:
+                logger.warning(f"Could not extract orthophoto bounds: {e}")
 
-                # Wait for both to complete and handle results
-                downloaded_pc = None
-                ortho_path = None
-                pc_error = None
-                ortho_error = None
-
-                for future in as_completed(
-                    [pc_future, ortho_future], timeout=300
-                ):  # 5 minute timeout
-                    try:
-                        if future == pc_future:
-                            downloaded_pc = future.result()
-                            logger.info("Point cloud fetch completed successfully")
-                        elif future == ortho_future:
-                            ortho_path = future.result()
-                            logger.info("Orthophoto fetch completed successfully")
-                    except Exception as e:
-                        if future == pc_future:
-                            pc_error = e
-                            logger.error(f"Point cloud fetch failed: {e}")
-                        elif future == ortho_future:
-                            ortho_error = e
-                            logger.error(f"Orthophoto fetch failed: {e}")
-
-            # Check results and provide helpful error messages
-            if pc_error and ortho_error:
-                raise RuntimeError(
-                    f"Both downloads failed. Point cloud: {pc_error}. Orthophoto: {ortho_error}"
-                )
-            elif pc_error:
-                raise RuntimeError(
-                    f"Point cloud download failed: {pc_error}. "
-                    "The orthophoto was downloaded successfully, but point cloud data is required for processing."
-                )
-            elif ortho_error:
-                raise RuntimeError(
-                    f"Orthophoto download failed: {ortho_error}. "
-                    "The point cloud was downloaded successfully, but orthophoto data is required for colorization."
-                )
-
-            if not downloaded_pc:
-                raise RuntimeError(
-                    "Point cloud download completed but no file path was returned"
-                )
-            if not ortho_path:
-                raise RuntimeError(
-                    "Orthophoto download completed but no file path was returned"
-                )
+            # Now fetch point cloud using orthophoto-aware selection
+            logger.info("Fetching point cloud with orthophoto-aware selection...")
+            downloaded_pc = self._fetch_point_cloud_data(
+                pc_fetcher, lat, lon, ortho_bounds, ortho_crs
+            )
+            logger.info("Point cloud fetch completed successfully")
 
             logger.info("Both datasets fetched successfully, starting processing...")
 

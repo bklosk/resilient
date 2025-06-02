@@ -79,18 +79,45 @@ class CRSUtils:
             f"Point cloud coordinate ranges - X: {x_min:.2f} to {x_max:.2f}, Y: {y_min:.2f} to {y_max:.2f}"
         )
 
+        # Web Mercator (EPSG:3857) - common for web mapping services
+        if -20037508 < x_min < 20037508 and -20037508 < y_min < 20037508:
+            # Additional check: Web Mercator coordinates are typically large numbers
+            if abs(x_min) > 1000000 or abs(y_min) > 1000000:
+                logger.info("Detected likely Web Mercator coordinates (EPSG:3857)")
+                return "EPSG:3857"
+
+        # WGS84 Geographic (EPSG:4326) - latitude/longitude
+        if -180 <= x_min <= 180 and -90 <= y_min <= 90:
+            logger.info("Detected likely WGS84 geographic coordinates (EPSG:4326)")
+            return "EPSG:4326"
+
+        # UTM Zones for US (general UTM pattern first, then refine by region)
+        # General UTM pattern: X between 160000-834000, Y between 0-10000000
+        if 160000 < x_min < 834000 and 0 < y_min < 10000000:
+            # For continental US, Y values are typically > 3000000
+            if y_min > 3000000:
+                # Guess UTM zone based on rough geographic distribution
+                # This is a simplified heuristic - real detection would need more context
+                logger.info(
+                    "Detected likely UTM coordinates (assuming Zone 13N - EPSG:26913)"
+                )
+                return "EPSG:26913"
+
         # Colorado State Plane (feet) - common for US LiDAR
         if 3000000 < x_min < 3200000 and 1700000 < y_min < 1900000:
             logger.info("Detected likely Colorado State Plane coordinates (feet)")
             return "EPSG:2232"
-        # UTM Zone 13N (meters) - common for western US
-        elif 400000 < x_min < 800000 and 4000000 < y_min < 5000000:
-            logger.info("Detected likely UTM Zone 13N coordinates")
-            return "EPSG:26913"
         # Colorado State Plane (meters)
         elif 3000000 < x_min < 3200000 and 500000 < y_min < 700000:
             logger.info("Detected likely Colorado State Plane coordinates (meters)")
             return "EPSG:26954"
+
+        # Fallback: If coordinates are large projected values, try Web Mercator
+        if (abs(x_min) > 1000000 or abs(y_min) > 1000000) and abs(x_min) < 20037508:
+            logger.info(
+                "Fallback: Large coordinate values suggest Web Mercator (EPSG:3857)"
+            )
+            return "EPSG:3857"
 
         logger.warning("Could not automatically detect point cloud CRS")
         return None

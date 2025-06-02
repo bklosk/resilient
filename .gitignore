@@ -8,3 +8,4 @@
 /data/*
 /scripts/data
 api/__pycache__
+output.txt
