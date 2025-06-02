@@ -21,6 +21,7 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, validator
+import uvicorn
 
 # Add the scripts directory to the Python path so we can import the modules
 scripts_dir = Path(__file__).parent.parent / "scripts"
@@ -57,6 +58,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "http://127.0.0.1:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
     ],  # Next.js dev server
     allow_credentials=True,
     allow_methods=["*"],
