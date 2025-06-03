@@ -39,12 +39,22 @@ def test_safe_filename():
 
 def test_geocode_fallback(monkeypatch):
     g = utils.GeocodeUtils()
+    # Simulate failure of the first geocoder
     monkeypatch.setattr(
-        g.geolocator,
-        'geocode',
-        mock.Mock(side_effect=GeopyError('fail')),
+        g.geocoders[0],
+        "geocode",
+        mock.Mock(side_effect=GeopyError("fail")),
     )
-    lat, lon = g.geocode_address('1250 Wildwood Road, Boulder, CO', max_retries=1)
+
+    # Provide a successful response from the fallback geocoder
+    mock_location = mock.Mock(latitude=40.0274, longitude=-105.2519)
+    monkeypatch.setattr(
+        g.geocoders[1],
+        "geocode",
+        mock.Mock(return_value=mock_location),
+    )
+
+    lat, lon = g.geocode_address("1250 Wildwood Road, Boulder, CO", max_retries=1)
     assert abs(lat - 40.0274) < 1e-4
     assert abs(lon - (-105.2519)) < 1e-4
 
