@@ -109,6 +109,7 @@ class Job(BaseModel):
     output_file: Optional[str] = None
     error_message: Optional[str] = None
     metadata: Dict[str, Any] = {}
+    logs: list[str] = []
 
 
 # Thread-safe job storage with lock
@@ -129,6 +130,20 @@ def update_job_status(job_id: str, **updates) -> bool:
             else:
                 setattr(jobs[job_id], key, value)
         return True
+
+
+def record_job_log(job_id: str, message: str) -> None:
+    """Record a log message for a job and keep recent entries."""
+    timestamped = f"{datetime.now().isoformat(timespec='seconds')} - {message}"
+    logger.info(message)
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if not job:
+            return
+        job.logs.append(timestamped)
+        # Keep at most the last 20 log lines to avoid unbounded growth
+        if len(job.logs) > 20:
+            job.logs = job.logs[-20:]
 
 
 def get_job_safe(job_id: str) -> Optional[Job]:
@@ -182,6 +197,7 @@ class JobStatusResponse(BaseModel):
     output_file: Optional[str] = None
     error_message: Optional[str] = None
     metadata: Dict[str, Any] = {}
+    logs: list[str] = []
 
 
 @app.get("/health")
@@ -221,7 +237,7 @@ def process_point_cloud_background(job_id: str, address: str, buffer_km: float):
         ):
             return
 
-        logger.info(f"Starting background processing for job {job_id}")
+        record_job_log(job_id, f"Starting background processing for job {job_id}")
 
         # Step 1: Input validation
         address = address.strip() if address else ""
@@ -252,7 +268,7 @@ def process_point_cloud_background(job_id: str, address: str, buffer_km: float):
                 if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
                     raise ValueError(f"Invalid coordinates: {lat}, {lon}")
 
-                logger.info(f"Address geocoded to: {lat:.6f}, {lon:.6f}")
+                record_job_log(job_id, f"Address geocoded to: {lat:.6f}, {lon:.6f}")
 
                 update_job_status(
                     job_id,
@@ -270,6 +286,7 @@ def process_point_cloud_background(job_id: str, address: str, buffer_km: float):
                 if attempt == max_retries - 1:  # Last attempt
                     error_msg = f"Failed to geocode address '{address}' after {max_retries} attempts: {str(e)}"
                     logger.error(error_msg)
+                    record_job_log(job_id, error_msg)
                     update_job_status(
                         job_id,
                         status=JobStatus.FAILED,
@@ -319,13 +336,14 @@ def process_point_cloud_background(job_id: str, address: str, buffer_km: float):
                     f"Invalid bounding box type - expected string or list, got {type(bbox)}: {bbox}"
                 )
 
-            logger.info(f"Generated valid bounding box: {bbox}")
+            record_job_log(job_id, f"Generated valid bounding box: {bbox}")
 
             products = pc_fetcher.search_lidar_products(bbox)
 
             if not products:
                 error_msg = f"No LiDAR data found for location: {address} (lat: {lat:.6f}, lon: {lon:.6f})"
                 logger.error(error_msg)
+                record_job_log(job_id, error_msg)
                 update_job_status(
                     job_id,
                     status=JobStatus.FAILED,
@@ -338,6 +356,7 @@ def process_point_cloud_background(job_id: str, address: str, buffer_km: float):
             if not laz_products:
                 error_msg = f"No LAZ format LiDAR data found for location: {address}"
                 logger.error(error_msg)
+                record_job_log(job_id, error_msg)
                 update_job_status(
                     job_id,
                     status=JobStatus.FAILED,
@@ -346,7 +365,7 @@ def process_point_cloud_background(job_id: str, address: str, buffer_km: float):
                 )
                 return
 
-            logger.info(f"Found {len(laz_products)} LAZ products for processing")
+            record_job_log(job_id, f"Found {len(laz_products)} LAZ products for processing")
 
             update_job_status(
                 job_id,
@@ -360,6 +379,7 @@ def process_point_cloud_background(job_id: str, address: str, buffer_km: float):
         except Exception as e:
             error_msg = f"Error checking LiDAR data availability: {str(e)}"
             logger.error(error_msg, exc_info=True)
+            record_job_log(job_id, error_msg)
             update_job_status(
                 job_id,
                 status=JobStatus.FAILED,
@@ -371,7 +391,7 @@ def process_point_cloud_background(job_id: str, address: str, buffer_km: float):
         # Step 4: Processing with temporary directory
         try:
             temp_dir = Path(tempfile.mkdtemp(prefix=f"photogrammetry_{job_id}_"))
-            logger.info(f"Created temporary directory: {temp_dir}")
+            record_job_log(job_id, f"Created temporary directory: {temp_dir}")
 
             update_job_status(
                 job_id,
@@ -384,7 +404,7 @@ def process_point_cloud_background(job_id: str, address: str, buffer_km: float):
             # Initialize colorizer and process with detailed error handling
             try:
                 colorizer = PointCloudColorizer(output_dir=str(temp_dir))
-                logger.info(f"Initialized PointCloudColorizer for job {job_id}")
+                record_job_log(job_id, f"Initialized PointCloudColorizer for job {job_id}")
 
                 update_job_status(
                     job_id,
@@ -396,12 +416,13 @@ def process_point_cloud_background(job_id: str, address: str, buffer_km: float):
                 if not output_path:
                     raise ValueError("Point cloud processing returned no output path")
 
-                logger.info(f"Point cloud processing completed, output: {output_path}")
+                record_job_log(job_id, f"Point cloud processing completed, output: {output_path}")
 
             except RuntimeError as e:
                 if "Failed to download point cloud" in str(e):
                     error_msg = f"Point cloud download failed for location: {address}. This could be due to: 1) No LiDAR data available for this area, 2) Network connectivity issues, 3) USGS service unavailable. Original error: {str(e)}"
                     logger.error(error_msg)
+                    record_job_log(job_id, error_msg)
                     update_job_status(
                         job_id,
                         status=JobStatus.FAILED,
@@ -414,6 +435,7 @@ def process_point_cloud_background(job_id: str, address: str, buffer_km: float):
             except Exception as e:
                 error_msg = f"Point cloud processing failed: {str(e)}"
                 logger.error(error_msg, exc_info=True)
+                record_job_log(job_id, error_msg)
                 update_job_status(
                     job_id,
                     status=JobStatus.FAILED,
@@ -472,13 +494,15 @@ def process_point_cloud_background(job_id: str, address: str, buffer_km: float):
                 },
             )
 
-            logger.info(
-                f"Successfully completed processing for job {job_id}, file size: {file_size_mb:.2f} MB"
+            record_job_log(
+                job_id,
+                f"Successfully completed processing for job {job_id}, file size: {file_size_mb:.2f} MB",
             )
 
         except Exception as e:
             error_msg = f"Processing error: {str(e)}"
             logger.error(error_msg, exc_info=True)
+            record_job_log(job_id, error_msg)
             update_job_status(
                 job_id,
                 status=JobStatus.FAILED,
@@ -491,6 +515,7 @@ def process_point_cloud_background(job_id: str, address: str, buffer_km: float):
             f"Unexpected error in background processing for job {job_id}: {e}",
             exc_info=True,
         )
+        record_job_log(job_id, f"Unexpected error: {e}")
         update_job_status(
             job_id,
             status=JobStatus.FAILED,
@@ -512,7 +537,8 @@ async def process_point_cloud(
         # Generate unique job ID
         job_id = str(uuid.uuid4())
 
-        logger.info(
+        record_job_log(
+            job_id,
             f"Received processing request for address: '{request.address}', job_id: {job_id}"
         )
 
@@ -550,7 +576,7 @@ async def process_point_cloud(
             process_point_cloud_background, job_id, address, request.buffer_km
         )
 
-        logger.info(f"Job {job_id} created and background task started")
+        record_job_log(job_id, "Job created and background task started")
 
         return ProcessResponse(
             success=True,
@@ -564,6 +590,7 @@ async def process_point_cloud(
         raise
     except Exception as e:
         logger.error(f"Error creating processing job: {e}", exc_info=True)
+        record_job_log(job_id, f"Error creating job: {e}")
         raise HTTPException(
             status_code=500, detail=f"Failed to start processing: {str(e)}"
         )
@@ -594,6 +621,7 @@ async def get_job_status(job_id: str):
         output_file=job.output_file,
         error_message=job.error_message,
         metadata=job.metadata,
+        logs=job.logs,
     )
 
 
