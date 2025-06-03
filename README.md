@@ -99,6 +99,16 @@ To run the pipeline:
 
 The script will process the data and print status messages to the console. Upon completion, it will save the colorized point cloud to a predefined location (e.g., `data/colorized_point_cloud.laz`). No separate visualization window will be opened by this script.
 
+### Running Tests
+
+After installing the dependencies you can run the API test suite with:
+
+```bash
+pytest
+```
+
+The tests use lightweight stubs so they finish quickly without needing external data downloads.
+
 ---
 
 Fighting climate change, one point cloud at a time! ✨🌍🌳
