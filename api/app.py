@@ -63,19 +63,32 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Add CORS middleware
+# Configure CORS
+# Allow origins can be overridden with the ``CORS_ORIGINS`` environment
+# variable (comma separated). This helps when the frontend is served from
+# a different host/port (e.g. Docker or Codespaces).
+default_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://0.0.0.0:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3001",
+]
+cors_origins_env = os.environ.get("CORS_ORIGINS")
+allow_origins = (
+    [o.strip() for o in cors_origins_env.split(",") if o.strip()]
+    if cors_origins_env
+    else default_origins
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:3001",
-        "http://127.0.0.1:3001",
-    ],  # Next.js dev server
+    allow_origins=allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+logger.info(f"CORS allowed origins: {allow_origins}")
 
 
 class JobStatus(str, Enum):
