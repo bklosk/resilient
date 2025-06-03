@@ -13,7 +13,6 @@ from typing import Dict, Any, Optional
 import tempfile
 import shutil
 import uuid
-import asyncio
 from datetime import datetime
 from enum import Enum
 
@@ -21,7 +20,6 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, validator
-import uvicorn
 from uvicorn.logging import DefaultFormatter
 
 # Add the scripts directory to the Python path so we can import the modules
