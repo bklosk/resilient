@@ -18,7 +18,7 @@ from enum import Enum
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field, validator
 from uvicorn.logging import DefaultFormatter
 
@@ -182,6 +182,12 @@ class JobStatusResponse(BaseModel):
     output_file: Optional[str] = None
     error_message: Optional[str] = None
     metadata: Dict[str, Any] = {}
+
+
+@app.get("/")
+async def root():
+    """Root endpoint that redirects to the OpenAPI specification."""
+    return RedirectResponse("/openapi.json")
 
 
 @app.get("/health")
