@@ -430,7 +430,7 @@ class PointCloudColorizer:
         las_data: laspy.LasData,
         ortho_dataset: rasterio.DatasetReader,
         source_crs: Optional[str] = None,
-    ) -> np.ndarray:
+    ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Colorize point cloud using orthophoto with optimized performance.
 
@@ -440,7 +440,7 @@ class PointCloudColorizer:
             source_crs: Source CRS override
 
         Returns:
-            RGB color array (N, 3) with uint16 values
+            Tuple of (RGB color array (N, 3) with uint16 values, valid_mask boolean array)
         """
         ortho_crs = str(ortho_dataset.crs) if ortho_dataset.crs else None
         if ortho_crs is None:
@@ -780,29 +780,41 @@ class PointCloudColorizer:
         )
 
         logger.info("Point cloud colorization complete")
-        return colors
+        return colors, valid_mask
 
     def save_colorized_point_cloud(
         self,
         las_data: laspy.LasData,
         colors: np.ndarray,
+        valid_mask: np.ndarray,
         output_path: str,
         preserve_original_colors: bool = True,
     ):
         """
-        Save colorized point cloud to file with optimized performance.
+        Save trimmed and colorized point cloud to file with optimized performance.
+        Only saves points that fall within the orthophoto bounds.
 
         Args:
             las_data: Original point cloud data
-            colors: RGB color array
+            colors: RGB color array for all points
+            valid_mask: Boolean mask indicating which points have valid colors
             output_path: Output file path
             preserve_original_colors: Whether to preserve existing colors as backup
         """
         output_path = Path(output_path)
-        logger.info(f"Saving colorized point cloud to: {output_path}")
+        logger.info(f"Saving trimmed colorized point cloud to: {output_path}")
+
+        # Filter data to only include points within orthophoto bounds
+        valid_points_count = np.sum(valid_mask)
+        total_points_count = len(las_data.points)
+
+        logger.info(
+            f"Trimming point cloud: {valid_points_count:,}/{total_points_count:,} points "
+            f"({100*valid_points_count/total_points_count:.1f}%) within orthophoto bounds"
+        )
 
         # Create new LAS data with colors
-        header = las_data.header
+        header = las_data.header.copy()
 
         # Point formats that support RGB colors: 2, 3, 5, 7, 8, 10
         rgb_supported_formats = {2, 3, 5, 7, 8, 10}
@@ -814,15 +826,18 @@ class PointCloudColorizer:
             )
             header.point_format = laspy.PointFormat(2)
 
-        # Create new LAS file more efficiently
+        # Update header to reflect the new point count
+        header.point_count = valid_points_count
+
+        # Create new LAS file with filtered data
         colorized_las = laspy.LasData(header)
 
-        # Copy all point data efficiently
-        colorized_las.x = las_data.x
-        colorized_las.y = las_data.y
-        colorized_las.z = las_data.z
+        # Copy only the valid points
+        colorized_las.x = las_data.x[valid_mask]
+        colorized_las.y = las_data.y[valid_mask]
+        colorized_las.z = las_data.z[valid_mask]
 
-        # Copy other attributes if they exist (optimized attribute checking)
+        # Copy other attributes if they exist (only for valid points)
         attributes_to_copy = [
             "intensity",
             "return_number",
@@ -835,20 +850,26 @@ class PointCloudColorizer:
 
         for attr_name in attributes_to_copy:
             if hasattr(las_data, attr_name):
-                setattr(colorized_las, attr_name, getattr(las_data, attr_name))
+                setattr(
+                    colorized_las, attr_name, getattr(las_data, attr_name)[valid_mask]
+                )
 
-        # Set colors efficiently
-        colorized_las.red = colors[:, 0]
-        colorized_las.green = colors[:, 1]
-        colorized_las.blue = colors[:, 2]
+        # Set colors efficiently (only for valid points)
+        valid_colors = colors[valid_mask]
+        colorized_las.red = valid_colors[:, 0]
+        colorized_las.green = valid_colors[:, 1]
+        colorized_las.blue = valid_colors[:, 2]
 
         # Save to file
-        logger.info("Writing LAZ file...")
+        logger.info("Writing trimmed LAZ file...")
         colorized_las.write(str(output_path))
 
         # File statistics
         file_size = output_path.stat().st_size / (1024 * 1024)  # MB
-        logger.info(f"Saved colorized point cloud ({file_size:.1f} MB)")
+        logger.info(f"Saved trimmed colorized point cloud ({file_size:.1f} MB)")
+        logger.info(
+            f"Trimmed from {total_points_count:,} to {valid_points_count:,} points"
+        )
 
     def _fetch_point_cloud_data(
         self,
@@ -1144,7 +1165,7 @@ class PointCloudColorizer:
 
         try:
             # Colorize
-            colors = self.colorize_point_cloud(las_data, ortho_dataset)
+            colors, valid_mask = self.colorize_point_cloud(las_data, ortho_dataset)
 
             # Generate output filename
             if output_name is None:
@@ -1153,13 +1174,19 @@ class PointCloudColorizer:
 
             output_path = self.output_dir / output_name
 
-            # Save result
-            self.save_colorized_point_cloud(las_data, colors, str(output_path))
+            # Save result (now trimmed to orthophoto intersection)
+            self.save_colorized_point_cloud(
+                las_data, colors, valid_mask, str(output_path)
+            )
 
             # Create summary report only if requested
             if create_summary:
                 self.create_summary_report(
-                    point_cloud_path, orthophoto_path, str(output_path), colors
+                    point_cloud_path,
+                    orthophoto_path,
+                    str(output_path),
+                    colors,
+                    valid_mask,
                 )
 
             return str(output_path)
@@ -1168,7 +1195,12 @@ class PointCloudColorizer:
             ortho_dataset.close()
 
     def create_summary_report(
-        self, pc_path: str, ortho_path: str, output_path: str, colors: np.ndarray
+        self,
+        pc_path: str,
+        ortho_path: str,
+        output_path: str,
+        colors: np.ndarray,
+        valid_mask: np.ndarray,
     ):
         """
         Create a summary report of the colorization process.
@@ -1177,26 +1209,49 @@ class PointCloudColorizer:
             pc_path: Input point cloud path
             ortho_path: Input orthophoto path
             output_path: Output point cloud path
-            colors: Color array
+            colors: Color array (for all original points)
+            valid_mask: Boolean mask indicating which points were within orthophoto bounds
         """
+        total_original_points = len(colors)
+        trimmed_points = np.sum(valid_mask)
+
+        # Only analyze colors for valid points
+        valid_colors = colors[valid_mask]
+
         report = {
             "input_point_cloud": str(pc_path),
             "input_orthophoto": str(ortho_path),
             "output_point_cloud": str(output_path),
             "processing_stats": {
-                "total_points": int(len(colors)),
-                "colorized_points": int(np.sum(np.any(colors > 0, axis=1))),
+                "original_total_points": int(total_original_points),
+                "trimmed_points": int(trimmed_points),
+                "trimming_rate": float(trimmed_points / total_original_points),
+                "colorized_points": int(np.sum(np.any(valid_colors > 0, axis=1))),
                 "colorization_rate": float(
-                    np.sum(np.any(colors > 0, axis=1)) / len(colors)
+                    np.sum(np.any(valid_colors > 0, axis=1)) / len(valid_colors)
+                    if len(valid_colors) > 0
+                    else 0
                 ),
             },
             "color_stats": {
-                "mean_red": float(np.mean(colors[:, 0])),
-                "mean_green": float(np.mean(colors[:, 1])),
-                "mean_blue": float(np.mean(colors[:, 2])),
-                "max_red": int(np.max(colors[:, 0])),
-                "max_green": int(np.max(colors[:, 1])),
-                "max_blue": int(np.max(colors[:, 2])),
+                "mean_red": (
+                    float(np.mean(valid_colors[:, 0])) if len(valid_colors) > 0 else 0
+                ),
+                "mean_green": (
+                    float(np.mean(valid_colors[:, 1])) if len(valid_colors) > 0 else 0
+                ),
+                "mean_blue": (
+                    float(np.mean(valid_colors[:, 2])) if len(valid_colors) > 0 else 0
+                ),
+                "max_red": (
+                    int(np.max(valid_colors[:, 0])) if len(valid_colors) > 0 else 0
+                ),
+                "max_green": (
+                    int(np.max(valid_colors[:, 1])) if len(valid_colors) > 0 else 0
+                ),
+                "max_blue": (
+                    int(np.max(valid_colors[:, 2])) if len(valid_colors) > 0 else 0
+                ),
             },
         }
 
@@ -1205,6 +1260,10 @@ class PointCloudColorizer:
             json.dump(report, f, indent=2)
 
         logger.info(f"Summary report saved: {report_path}")
+        logger.info(
+            f"Point cloud trimmed from {total_original_points:,} to {trimmed_points:,} points "
+            f"({report['processing_stats']['trimming_rate']:.1%})"
+        )
         logger.info(
             f"Colorization rate: {report['processing_stats']['colorization_rate']:.1%}"
         )
