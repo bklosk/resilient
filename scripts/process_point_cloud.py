@@ -812,21 +812,37 @@ class PointCloudColorizer:
             f"({100*valid_points_count/total_points_count:.1f}%) within orthophoto bounds"
         )
 
-        # Create new LAS data with colors
-        header = las_data.header.copy()
+        # Create new header based on original header
+        original_header = las_data.header
 
         # Point formats that support RGB colors: 2, 3, 5, 7, 8, 10
         rgb_supported_formats = {2, 3, 5, 7, 8, 10}
 
-        # Ensure point format supports colors
-        if header.point_format.id not in rgb_supported_formats:
+        # Determine the appropriate point format for colors
+        if original_header.point_format.id not in rgb_supported_formats:
             logger.info(
-                f"Converting from point format {header.point_format.id} to format 2 to support colors"
+                f"Converting from point format {original_header.point_format.id} to format 2 to support colors"
             )
-            header.point_format = laspy.PointFormat(2)
+            new_point_format = laspy.PointFormat(2)
+        else:
+            new_point_format = original_header.point_format
 
-        # Update header to reflect the new point count
-        header.point_count = valid_points_count
+        # Create new header with the same version but potentially different point format
+        header = laspy.LasHeader(
+            version=original_header.version, point_format=new_point_format
+        )
+
+        # Copy important properties from original header
+        header.x_scale = original_header.x_scale
+        header.y_scale = original_header.y_scale
+        header.z_scale = original_header.z_scale
+        header.x_offset = original_header.x_offset
+        header.y_offset = original_header.y_offset
+        header.z_offset = original_header.z_offset
+
+        # Copy VLRs (including CRS information) from original header
+        if hasattr(original_header, "vlrs") and original_header.vlrs:
+            header.vlrs = original_header.vlrs.copy()
 
         # Create new LAS file with filtered data
         colorized_las = laspy.LasData(header)
