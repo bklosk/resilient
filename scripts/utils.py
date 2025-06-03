@@ -60,17 +60,31 @@ class GeocodeUtils:
             ValueError: If geocoding fails after all retries and no fallback available
         """
         address_lower = address.lower().strip()
+        last_error: Optional[str] = None
 
-        # Use hardcoded coordinates for now to bypass network issues
-        logger.info(f"Using hardcoded coordinates for development - address: {address}")
+        for attempt in range(max_retries):
+            try:
+                location = self.geolocator.geocode(address, country_codes="us")
+                if location:
+                    logger.info(
+                        f"Geocoded '{address}' to {location.latitude:.6f}, {location.longitude:.6f}"
+                    )
+                    return float(location.latitude), float(location.longitude)
+                last_error = "No results returned"
+            except GeopyError as e:
+                last_error = str(e)
+                logger.warning(
+                    f"Geocoding attempt {attempt + 1} failed for '{address}': {e}"
+                )
 
-        # Check for exact matches first
+        # Fallback to hardcoded coordinates if available
         if address_lower in self.fallback_coordinates:
             lat, lon = self.fallback_coordinates[address_lower]
-            logger.info(f"Using hardcoded coordinates for '{address}': {lat}, {lon}")
+            logger.info(
+                f"Using fallback coordinates for '{address}': {lat}, {lon}"
+            )
             return lat, lon
 
-        # Check for partial matches in fallback coordinates
         for fallback_addr, coords in self.fallback_coordinates.items():
             if fallback_addr in address_lower or address_lower in fallback_addr:
                 lat, lon = coords
@@ -80,7 +94,7 @@ class GeocodeUtils:
                 return lat, lon
 
         raise ValueError(
-            f"Could not geocode address '{address}' and no fallback available"
+            f"Could not geocode address '{address}': {last_error or 'unknown error'}"
         )
 
 
