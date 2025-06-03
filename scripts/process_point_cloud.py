@@ -568,6 +568,15 @@ class PointCloudColorizer:
         pixel_cols = np.array(cols, dtype=np.int32)
         pixel_rows = np.array(rows, dtype=np.int32)
 
+        # DEBUG: Check coordinate transformation results
+        logger.info(f"DEBUG - Coordinate transformation samples (first 5):")
+        for i in range(min(5, len(transformed_x))):
+            logger.info(f"  Point {i}: World({transformed_x[i]:.2f}, {transformed_y[i]:.2f}) -> Pixel({pixel_cols[i]}, {pixel_rows[i]})")
+        
+        logger.info(f"DEBUG - Pixel coordinate ranges:")
+        logger.info(f"  Columns: min={np.min(pixel_cols)}, max={np.max(pixel_cols)} (image width: {ortho_dataset.width})")
+        logger.info(f"  Rows: min={np.min(pixel_rows)}, max={np.max(pixel_rows)} (image height: {ortho_dataset.height})")
+
         # Find valid pixels
         valid_mask = (
             (pixel_cols >= 0)
@@ -668,6 +677,16 @@ class PointCloudColorizer:
                 green_values = green_band[valid_rows, valid_cols]
                 blue_values = blue_band[valid_rows, valid_cols]
 
+                # DEBUG: Check raw pixel values
+                logger.info(f"DEBUG - Raw pixel value samples (first 5):")
+                logger.info(f"  Red: {red_values[:5]}")
+                logger.info(f"  Green: {green_values[:5]}")
+                logger.info(f"  Blue: {blue_values[:5]}")
+                logger.info(f"DEBUG - Raw pixel value ranges:")
+                logger.info(f"  Red: min={np.min(red_values)}, max={np.max(red_values)}")
+                logger.info(f"  Green: min={np.min(green_values)}, max={np.max(green_values)}")
+                logger.info(f"  Blue: min={np.min(blue_values)}, max={np.max(blue_values)}")
+
         elif ortho_dataset.count == 1:
             # Grayscale
             logger.info("Reading grayscale band for valid pixels only...")
@@ -675,11 +694,16 @@ class PointCloudColorizer:
             gray_values = gray_band[valid_rows, valid_cols]
             red_values = green_values = blue_values = gray_values
 
+            # DEBUG: Check raw grayscale values
+            logger.info(f"DEBUG - Raw grayscale value samples (first 5): {gray_values[:5]}")
+            logger.info(f"DEBUG - Raw grayscale value range: min={np.min(gray_values)}, max={np.max(gray_values)}")
+
         else:
             raise ValueError(f"Unsupported number of bands: {ortho_dataset.count}")
 
         # Optimized scaling using vectorized operations
         dtype_str = str(ortho_dataset.dtypes[0])
+        logger.info(f"DEBUG - Orthophoto data type: {dtype_str}")
 
         if "uint8" in dtype_str:
             # Scale from 0-255 to 0-65535 using vectorized multiplication
@@ -687,24 +711,47 @@ class PointCloudColorizer:
             colors[valid_mask, 0] = (red_values * scale_factor).astype(np.uint16)
             colors[valid_mask, 1] = (green_values * scale_factor).astype(np.uint16)
             colors[valid_mask, 2] = (blue_values * scale_factor).astype(np.uint16)
+            logger.info(f"DEBUG - Applied uint8 scaling (factor: {scale_factor})")
 
         elif "uint16" in dtype_str:
             # Direct assignment for uint16
             colors[valid_mask, 0] = red_values.astype(np.uint16)
             colors[valid_mask, 1] = green_values.astype(np.uint16)
             colors[valid_mask, 2] = blue_values.astype(np.uint16)
+            logger.info("DEBUG - Applied uint16 direct assignment")
 
         elif "float" in dtype_str:
             # Scale from 0-1 range to 0-65535
             colors[valid_mask, 0] = (red_values * 65535).astype(np.uint16)
             colors[valid_mask, 1] = (green_values * 65535).astype(np.uint16)
             colors[valid_mask, 2] = (blue_values * 65535).astype(np.uint16)
+            logger.info("DEBUG - Applied float scaling (factor: 65535)")
 
         else:
             logger.warning(f"Unknown data type {dtype_str}, using direct conversion")
             colors[valid_mask, 0] = red_values.astype(np.uint16)
             colors[valid_mask, 1] = green_values.astype(np.uint16)
             colors[valid_mask, 2] = blue_values.astype(np.uint16)
+            logger.info("DEBUG - Applied direct conversion")
+
+        # DEBUG: Check final color values
+        logger.info(f"DEBUG - Final color values (first 5 points):")
+        for i in range(min(5, len(colors))):
+            if valid_mask[i]:
+                logger.info(f"  Point {i}: R={colors[i,0]}, G={colors[i,1]}, B={colors[i,2]}")
+        
+        # DEBUG: Check color statistics
+        valid_colors = colors[valid_mask]
+        logger.info(f"DEBUG - Color statistics for {len(valid_colors)} valid points:")
+        logger.info(f"  Red: min={np.min(valid_colors[:,0])}, max={np.max(valid_colors[:,0])}, mean={np.mean(valid_colors[:,0]):.1f}")
+        logger.info(f"  Green: min={np.min(valid_colors[:,1])}, max={np.max(valid_colors[:,1])}, mean={np.mean(valid_colors[:,1]):.1f}")
+        logger.info(f"  Blue: min={np.min(valid_colors[:,2])}, max={np.max(valid_colors[:,2])}, mean={np.mean(valid_colors[:,2]):.1f}")
+        
+        # DEBUG: Count non-zero colors
+        non_zero_red = np.sum(valid_colors[:,0] > 0)
+        non_zero_green = np.sum(valid_colors[:,1] > 0)
+        non_zero_blue = np.sum(valid_colors[:,2] > 0)
+        logger.info(f"DEBUG - Non-zero color counts: R={non_zero_red}, G={non_zero_green}, B={non_zero_blue}")
 
         logger.info("Point cloud colorization complete")
         return colors
