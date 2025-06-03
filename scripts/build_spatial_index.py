@@ -34,9 +34,8 @@ class SpatialIndexBuilder:
         self.s3_utils = S3Utils()
         self.s3_client = self.s3_utils.get_client()
 
-        # Thread-safe counter for progress tracking
+        # Thread-safe counter and lock for progress tracking
         self.processed_count = 0
-        self.lock = threading.Lock()
         self.lock = threading.Lock()
 
     def list_all_datasets(self) -> List[str]:
