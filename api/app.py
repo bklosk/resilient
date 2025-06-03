@@ -171,6 +171,28 @@ class ProcessResponse(BaseModel):
     metadata: Dict[str, Any] = {}
 
 
+class OrthophotoRequest(BaseModel):
+    """Request model for orthophoto download."""
+
+    address: str = Field(
+        ...,
+        description="Street address to fetch orthophoto for",
+        example="1250 Wildwood Road, Boulder, CO",
+        min_length=5,
+        max_length=200,
+    )
+    image_size: Optional[str] = Field(
+        default=None,
+        description="Image size as 'width,height'. Use 'auto' or omit for native resolution",
+    )
+
+    @validator("address")
+    def validate_address(cls, v):
+        if not v or not v.strip():
+            raise ValueError("Address cannot be empty")
+        return v.strip()
+
+
 class JobStatusResponse(BaseModel):
     """Response model for job status queries."""
 
@@ -688,6 +710,32 @@ async def download_file(job_id: str):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@app.post("/orthophoto")
+async def download_orthophoto(request: OrthophotoRequest):
+    """Fetch and return an orthophoto for the given address."""
+    try:
+        fetcher = NAIPFetcher()
+        data_dir = Path(__file__).parent.parent / "data" / "orthophotos"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        output_path, _ = fetcher.get_orthophoto_for_address(
+            request.address, str(data_dir), request.image_size
+        )
+        file_path = Path(output_path)
+        if not file_path.exists() or not file_path.is_file():
+            logger.error(f"Orthophoto download failed for {request.address}")
+            raise HTTPException(status_code=500, detail="Orthophoto download failed")
+        return FileResponse(
+            path=str(file_path),
+            filename=file_path.name,
+            media_type="image/tiff",
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error downloading orthophoto for {request.address}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch orthophoto")
+
+
 def cleanup_temp_dir(temp_dir: Path):
     """Clean up temporary directory with error handling."""
     try:
@@ -707,6 +755,8 @@ async def startup_event():
     data_dir = Path(__file__).parent.parent / "data"
     output_dir = data_dir / "outputs"
     output_dir.mkdir(parents=True, exist_ok=True)
+    ortho_dir = data_dir / "orthophotos"
+    ortho_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info("Photogrammetry API startup complete")
 
