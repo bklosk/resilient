@@ -22,10 +22,27 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, validator
 import uvicorn
+from uvicorn.logging import DefaultFormatter
 
 # Add the scripts directory to the Python path so we can import the modules
 scripts_dir = Path(__file__).parent.parent / "scripts"
 sys.path.insert(0, str(scripts_dir))
+
+# Configure logging with uvicorn-style colors first (before any logging usage)
+handler = logging.StreamHandler(sys.stdout)
+handler.setFormatter(
+    DefaultFormatter(
+        fmt="%(levelprefix)s %(message)s",  # identical to uvicorn default
+        use_colors=True,  # force colours
+    )
+)
+
+logger = logging.getLogger("photogrammetry-api")
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+
+# Remove any default handlers to avoid duplicate logs
+logger.propagate = False
 
 # Import our helper modules
 try:
@@ -34,17 +51,11 @@ try:
     from get_point_cloud import PointCloudDatasetFinder
     from get_orthophoto import NAIPFetcher
 except ImportError as e:
-    print(f"Error importing required modules: {e}")
-    print(
+    logger.error(f"Error importing required modules: {e}")
+    logger.error(
         "Make sure you're running from the correct directory and all dependencies are installed"
     )
     sys.exit(1)
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Photogrammetry Point Cloud API",
