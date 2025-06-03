@@ -2,8 +2,8 @@
 """
 Geocoding Module
 
-This module provides geocoding functionality to convert addresses to coordinates
-using the geopy library with Nominatim (OpenStreetMap) geocoder.
+This module provides reliable geocoding functionality using multiple geocoding services
+with fallback support for maximum reliability.
 
 Usage:
     from geocode import Geocoder
@@ -13,76 +13,108 @@ Usage:
 """
 
 import sys
-import re
-from typing import Tuple, Dict
+import time
+from typing import Tuple, Optional
+from geopy.geocoders import Photon, ArcGIS, GoogleV3
+from geopy.exc import GeopyError
 
 
 class Geocoder:
-    """Reliable offline-first geocoding using pattern matching and fallbacks."""
+    """Reliable geocoding using multiple services with fallback support."""
 
     def __init__(self, user_agent: str = "photogrammetry_geocoder"):
-        """Initialize with comprehensive address database."""
-        self.coords_db = {
-            # Specific addresses
-            "1250 wildwood road, boulder, co": (40.0274, -105.2519),
-            "1250 wildwood rd, boulder, co": (40.0274, -105.2519),
-            "1250 wildwood road boulder co": (40.0274, -105.2519),
-            "1250 wildwood rd boulder co": (40.0274, -105.2519),
-            # Cities and towns
-            "boulder, co": (40.0150, -105.2705),
-            "boulder colorado": (40.0150, -105.2705),
-            "denver, co": (39.7392, -104.9903),
-            "denver colorado": (39.7392, -104.9903),
-            "colorado springs, co": (38.8339, -104.8214),
-            "fort collins, co": (40.5853, -105.0844),
-            "aurora, co": (39.7294, -104.8319),
-            "lakewood, co": (39.7047, -105.0814),
-            "thornton, co": (39.8681, -104.9719),
-            "arvada, co": (39.8028, -105.0875),
-            "westminster, co": (39.8367, -105.0372),
-            "pueblo, co": (38.2544, -104.6091),
-        }
+        """Initialize geocoder with multiple fallback services."""
+        self.user_agent = user_agent
+        # Multiple geocoding services in order of preference
+        self.geocoders = [
+            Photon(user_agent=self.user_agent, timeout=10),  # Free, no API key needed
+            ArcGIS(timeout=10),  # Free tier, no API key needed
+            # GoogleV3 would require API key, so commented out
+            # GoogleV3(api_key="your_api_key", timeout=10),
+        ]
 
     def geocode_address(
         self, address: str, max_retries: int = 3
     ) -> Tuple[float, float]:
-        """Convert address to coordinates using pattern matching."""
-        addr = address.lower().strip().replace(",", ", ")
+        """Convert address to coordinates using multiple geocoding services."""
+        last_error: Optional[str] = None
 
-        # Direct lookup
-        if addr in self.coords_db:
-            lat, lon = self.coords_db[addr]
-            print(f"Successfully geocoded to: {lat:.6f}, {lon:.6f}")
-            return lat, lon
+        for geocoder in self.geocoders:
+            for attempt in range(max_retries):
+                try:
+                    print(f"Attempting geocoding with {geocoder.__class__.__name__}...")
 
-        # Pattern matching for variations
-        for known_addr, coords in self.coords_db.items():
-            if self._addresses_match(addr, known_addr):
-                lat, lon = coords
-                print(f"Successfully geocoded to: {lat:.6f}, {lon:.6f}")
-                return lat, lon
+                    # Use appropriate parameters for each geocoder
+                    if geocoder.__class__.__name__ == "Photon":
+                        location = geocoder.geocode(address)
+                    elif geocoder.__class__.__name__ == "ArcGIS":
+                        location = geocoder.geocode(address)
+                    else:
+                        # Default case for other geocoders
+                        location = geocoder.geocode(address)
 
-        raise Exception(f"Address '{address}' not found in database")
+                    if location:
+                        lat, lon = float(location.latitude), float(location.longitude)
+                        print(f"Successfully geocoded to: {lat:.6f}, {lon:.6f}")
+                        return lat, lon
+                    else:
+                        last_error = f"{geocoder.__class__.__name__}: No results found"
 
-    def _addresses_match(self, addr1: str, addr2: str) -> bool:
-        """Check if two addresses are similar enough to match."""
-        # Normalize both addresses
-        norm1 = re.sub(
-            r"[^\w\s]", "", addr1.replace("road", "rd").replace("street", "st")
+                except GeopyError as e:
+                    last_error = f"{geocoder.__class__.__name__}: {str(e)}"
+                    print(f"Geocoding attempt {attempt + 1} failed: {e}")
+                    if attempt < max_retries - 1:
+                        time.sleep(1)  # Brief delay between retries
+                except Exception as e:
+                    last_error = f"{geocoder.__class__.__name__}: {str(e)}"
+                    print(f"Unexpected error: {e}")
+                    break  # Don't retry on unexpected errors
+
+        raise Exception(f"All geocoding services failed. Last error: {last_error}")
+
+    def _extract_state(self, addr: str) -> str:
+        """Extract state abbreviation or name."""
+        for state_key in self.state_centers.keys():
+            if state_key in addr:
+                return state_key
+        return ""
+
+    def _extract_city(self, addr: str) -> str:
+        """Extract city name from address."""
+        # Common patterns: "city, state" or "city state"
+        parts = re.split(r"[,\s]+", addr)
+        for i, part in enumerate(parts):
+            if part in self.state_centers and i > 0:
+                return parts[i - 1]
+
+        # If no state found, try common city names
+        cities = ["boulder", "denver", "aurora", "lakewood", "thornton"]
+        for city in cities:
+            if city in addr:
+                return city
+        return ""
+
+    def _extract_street_number(self, addr: str) -> int:
+        """Extract street number from address."""
+        numbers = re.findall(r"\b\d+\b", addr)
+        return int(numbers[0]) if numbers else 0
+
+    def _extract_street_name(self, addr: str) -> str:
+        """Extract street name from address."""
+        # Remove numbers and common suffixes, get remaining text
+        cleaned = re.sub(r"\b\d+\b", "", addr)
+        cleaned = re.sub(
+            r"\b(st|street|rd|road|ave|avenue|blvd|boulevard|dr|drive|ln|lane|way|ct|court|pl|place)\b",
+            "",
+            cleaned,
         )
-        norm2 = re.sub(
-            r"[^\w\s]", "", addr2.replace("road", "rd").replace("street", "st")
+        cleaned = re.sub(
+            r"\b(co|colorado|ca|california|tx|texas|ny|new york|fl|florida)\b",
+            "",
+            cleaned,
         )
-
-        # Split into tokens
-        tokens1 = set(norm1.split())
-        tokens2 = set(norm2.split())
-
-        # Calculate overlap - need at least 60% of tokens to match
-        if not tokens1 or not tokens2:
-            return False
-        overlap = len(tokens1.intersection(tokens2))
-        return overlap / min(len(tokens1), len(tokens2)) >= 0.6
+        words = [w for w in cleaned.split() if len(w) > 2]
+        return " ".join(words[:2]) if words else ""
 
 
 def geocode_address(

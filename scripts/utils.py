@@ -9,9 +9,10 @@ to reduce code duplication and improve maintainability.
 import logging
 import os
 import json
+import time
 import requests
 from typing import Tuple, Optional
-from geopy.geocoders import Nominatim
+from geopy.geocoders import Photon, ArcGIS
 from geopy.exc import GeopyError
 from pyproj import Transformer, CRS
 import numpy as np
@@ -22,28 +23,21 @@ logger = logging.getLogger(__name__)
 
 
 class GeocodeUtils:
-    """Centralized geocoding functionality with fallback support."""
+    """Centralized geocoding functionality using multiple services."""
 
     def __init__(self):
-        self.geolocator = Nominatim(
-            user_agent="photogrammetry_processor", timeout=10  # 10 second timeout
-        )
-        self.fallback_coordinates = {
-            # Common test addresses for development
-            "1250 wildwood road, boulder, co": (40.0274, -105.2519),
-            "1250 wildwood road boulder co": (40.0274, -105.2519),
-            "1250 wildwood rd, boulder, co": (40.0274, -105.2519),
-            "1250 wildwood rd boulder co": (40.0274, -105.2519),
-            "boulder, co": (40.0150, -105.2705),
-            "boulder colorado": (40.0150, -105.2705),
-            "denver, co": (39.7392, -104.9903),
-            "denver colorado": (39.7392, -104.9903),
-        }
+        """Initialize geocoder with multiple fallback services."""
+        self.user_agent = "photogrammetry_geocoder"
+        # Multiple geocoding services in order of preference
+        self.geocoders = [
+            Photon(user_agent=self.user_agent, timeout=10),  # Free, no API key needed
+            ArcGIS(timeout=10),  # Free tier, no API key needed
+        ]
 
     def geocode_address(
         self, address: str, max_retries: int = 3
     ) -> Tuple[float, float]:
-        """Convert an address to lat/lon coordinates with fallback support.
+        """Convert an address to lat/lon coordinates using multiple geocoding services.
 
         Args:
             address: Address string to geocode
@@ -53,45 +47,36 @@ class GeocodeUtils:
             Tuple of (latitude, longitude)
 
         Raises:
-            ValueError: If geocoding fails after all retries and no fallback available
+            ValueError: If geocoding fails
         """
-        address_lower = address.lower().strip()
         last_error: Optional[str] = None
 
-        for attempt in range(max_retries):
-            try:
-                location = self.geolocator.geocode(address, country_codes="us")
-                if location:
+        for geocoder in self.geocoders:
+            for attempt in range(max_retries):
+                try:
                     logger.info(
-                        f"Geocoded '{address}' to {location.latitude:.6f}, {location.longitude:.6f}"
+                        f"Attempting geocoding with {geocoder.__class__.__name__}..."
                     )
-                    return float(location.latitude), float(location.longitude)
-                last_error = "No results returned"
-            except GeopyError as e:
-                last_error = str(e)
-                logger.warning(
-                    f"Geocoding attempt {attempt + 1} failed for '{address}': {e}"
-                )
+                    location = geocoder.geocode(address)
 
-        # Fallback to hardcoded coordinates if available
-        if address_lower in self.fallback_coordinates:
-            lat, lon = self.fallback_coordinates[address_lower]
-            logger.info(
-                f"Using fallback coordinates for '{address}': {lat}, {lon}"
-            )
-            return lat, lon
+                    if location:
+                        lat, lon = float(location.latitude), float(location.longitude)
+                        logger.info(f"Successfully geocoded to: {lat:.6f}, {lon:.6f}")
+                        return lat, lon
+                    else:
+                        last_error = f"{geocoder.__class__.__name__}: No results found"
 
-        for fallback_addr, coords in self.fallback_coordinates.items():
-            if fallback_addr in address_lower or address_lower in fallback_addr:
-                lat, lon = coords
-                logger.warning(
-                    f"Using partial match fallback coordinates for '{address}': {lat}, {lon}"
-                )
-                return lat, lon
+                except GeopyError as e:
+                    last_error = f"{geocoder.__class__.__name__}: {str(e)}"
+                    logger.warning(f"Geocoding attempt {attempt + 1} failed: {e}")
+                    if attempt < max_retries - 1:
+                        time.sleep(1)  # Brief delay between retries
+                except Exception as e:
+                    last_error = f"{geocoder.__class__.__name__}: {str(e)}"
+                    logger.warning(f"Unexpected error: {e}")
+                    break  # Don't retry on unexpected errors
 
-        raise ValueError(
-            f"Could not geocode address '{address}': {last_error or 'unknown error'}"
-        )
+        raise ValueError(f"All geocoding services failed. Last error: {last_error}")
 
 
 class CRSUtils:
