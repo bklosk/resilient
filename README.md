@@ -28,7 +28,7 @@ For example, we could:
 1.  **Data Acquisition & Preprocessing:**
     *   Collect LiDAR scans 📡 and orthophotos 🖼️.
     *   Align and fuse these datasets.
-    *   Colorize the LiDAR point cloud using orthophoto imagery (Implemented in `scripts/pipeline.py`!).
+    *   Colorize the LiDAR point cloud using orthophoto imagery (implemented in `scripts/process_point_cloud.py`).
 2.  **3D Semantic Segmentation:**
     *   Train or use a pre-trained model to classify points in the cloud (e.g., using Open3D-ML) 🧠.
 3.  **Candidate Identification & Analysis:**
@@ -76,7 +76,7 @@ For example, we could:
 
 ### Running the Pipeline 🚀
 
-The main pipeline script is `scripts/pipeline.py`. This script currently focuses on colorizing a hardcoded point cloud using satellite imagery and saves the processed data.
+The main entry point is `scripts/process_point_cloud.py`. This script colorizes LiDAR point clouds using orthophotos and can either download data for an address or process existing files.
 
 To run the pipeline:
 
@@ -88,13 +88,13 @@ To run the pipeline:
     ```bash
     cd scripts
     ```
-3.  **Execute the pipeline script:**
+3.  **Execute the script:**
     ```bash
-    python pipeline.py
+    python process_point_cloud.py --address "1250 Wildwood Road, Boulder, CO"
     ```
     If you are in the root directory of the project, you can run it as:
     ```bash
-    python scripts/pipeline.py
+    python scripts/process_point_cloud.py --address "1250 Wildwood Road, Boulder, CO"
     ```
 
 The script will process the data and print status messages to the console. Upon completion, it will save the colorized point cloud to a predefined location (e.g., `data/colorized_point_cloud.laz`). No separate visualization window will be opened by this script.
