@@ -21,13 +21,13 @@ class Geocoder:
     """Class to handle address geocoding using Nominatim - streamlined version."""
 
     def __init__(self, user_agent: str = "photogrammetry_geocoder"):
-        """
-        Initialize the geocoder.
+        """Initialize the geocoder.
 
         Args:
-            user_agent: User agent string for the geocoding service
+            user_agent: Identifier used when making requests to the geocoding
+                service.
         """
-        self.geocode_utils = GeocodeUtils()
+        self.geocode_utils = GeocodeUtils(user_agent=user_agent)
 
     def geocode_address(
         self, address: str, max_retries: int = 3
@@ -61,7 +61,8 @@ def geocode_address(
 
     Args:
         address: The address string to geocode
-        user_agent: User agent string for the geocoding service
+        user_agent: Identifier used when making requests to the geocoding
+            service
 
     Returns:
         Tuple of (latitude, longitude) in decimal degrees

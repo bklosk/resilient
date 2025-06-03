@@ -28,9 +28,16 @@ logger = logging.getLogger(__name__)
 class GeocodeUtils:
     """Centralized geocoding functionality with fallback support."""
 
-    def __init__(self):
+    def __init__(self, user_agent: str = "photogrammetry_processor"):
+        """Initialize the utility with an optional custom user agent.
+
+        Args:
+            user_agent: Identifier used when making requests to the geocoding
+                service. Providing your own value helps avoid service limits
+                that may apply to generic user agents.
+        """
         self.geolocator = Nominatim(
-            user_agent="photogrammetry_processor", timeout=10  # 10 second timeout
+            user_agent=user_agent, timeout=10  # 10 second timeout
         )
         self.fallback_coordinates = {
             # Common test addresses for development
