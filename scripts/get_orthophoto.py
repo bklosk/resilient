@@ -27,8 +27,59 @@ class NAIPFetcher:
     """Class to fetch NAIP orthophotos using USGS NAIPPlus ImageServer."""
 
     def __init__(self):
-        """Initialize the NAIP fetcher."""
-        self.service_url = "https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPPlus/ImageServer/exportImage"
+        """Initialize the NAIP fetcher and query service capabilities."""
+        self.service_url = (
+            "https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPPlus/ImageServer/exportImage"
+        )
+        # Related service info endpoint used to discover limits and native pixel
+        # size.  Defaults are safe fallbacks in case the request fails.
+        self.service_info_url = (
+            "https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPPlus/ImageServer"
+        )
+        self.max_image_width = 4000
+        self.max_image_height = 4000
+        self.native_pixel_size = 1.0
+        self._fetch_service_info()
+
+    def _fetch_service_info(self) -> None:
+        """Query the service info endpoint to populate limits."""
+        try:
+            resp = requests.get(f"{self.service_info_url}?f=json", timeout=10)
+            resp.raise_for_status()
+            info = resp.json()
+            self.max_image_width = info.get("maxImageWidth", self.max_image_width)
+            self.max_image_height = info.get(
+                "maxImageHeight", self.max_image_height
+            )
+            self.native_pixel_size = min(
+                info.get("pixelSizeX", self.native_pixel_size),
+                info.get("pixelSizeY", self.native_pixel_size),
+            )
+            print(
+                f"Service limits - width: {self.max_image_width}, height: {self.max_image_height}, pixel size: {self.native_pixel_size}"
+            )
+        except Exception as exc:  # Broad catch to avoid breaking the flow
+            print(f"Warning: failed to fetch service info: {exc}")
+
+    def _calculate_optimal_size(
+        self, min_lon: float, min_lat: float, max_lon: float, max_lat: float, pixel_size: float | None = None
+    ) -> str:
+        """Calculate an image size matching the native pixel resolution."""
+
+        if pixel_size is None:
+            pixel_size = self.native_pixel_size
+
+        mid_lat = (min_lat + max_lat) / 2.0
+        height_m = (max_lat - min_lat) * 111_000
+        width_m = (max_lon - min_lon) * 111_000 * math.cos(math.radians(mid_lat))
+
+        width_px = int(width_m / pixel_size)
+        height_px = int(height_m / pixel_size)
+
+        width_px = max(1, min(width_px, self.max_image_width))
+        height_px = max(1, min(height_px, self.max_image_height))
+
+        return f"{width_px},{height_px}"
 
     def calculate_acre_bbox(
         self, latitude: float, longitude: float
@@ -75,7 +126,7 @@ class NAIPFetcher:
         max_lon: float,
         max_lat: float,
         output_path: str,
-        image_size: str = "2048,2048",
+        image_size: Optional[str] = None,
     ) -> Dict:
         """
         Export a clipped NAIP image from the USGS NAIPPlus service with fallback sizing.
@@ -86,7 +137,9 @@ class NAIPFetcher:
             max_lon: Maximum longitude
             max_lat: Maximum latitude
             output_path: Path to save the exported image
-            image_size: Image dimensions as "width,height" string
+            image_size: Optional image size as ``"width,height"``.  ``None`` or
+                ``"auto"`` computes a size based on the service's native pixel
+                resolution for the provided bounding box.
 
         Returns:
             Dictionary containing export metadata
@@ -96,13 +149,15 @@ class NAIPFetcher:
         """
         bbox = ",".join(map(str, [min_lon, min_lat, max_lon, max_lat]))
 
-        # List of image sizes to try, from requested down to smaller fallbacks
-        requested_size = image_size
+        if image_size in (None, "auto"):
+            requested_size = self._calculate_optimal_size(
+                min_lon, min_lat, max_lon, max_lat
+            )
+        else:
+            requested_size = image_size
         fallback_sizes = ["2048,2048", "1024,1024", "512,512"]
 
-        # Start with requested size, then try fallbacks if needed
-        sizes_to_try = [requested_size] if requested_size not in fallback_sizes else []
-        sizes_to_try.extend(fallback_sizes)
+        sizes_to_try = [requested_size] + fallback_sizes
 
         # Remove duplicates while preserving order
         seen = set()
@@ -246,7 +301,10 @@ class NAIPFetcher:
         return filepath
 
     def get_orthophoto_for_address(
-        self, address: str, output_dir: str = "../data", image_size: str = "2048,2048"
+        self,
+        address: str,
+        output_dir: str = "../data",
+        image_size: Optional[str] = None,
     ) -> Tuple[str, Dict]:
         """
         Get NAIP orthophoto for a given address using USGS NAIPPlus service.
@@ -254,7 +312,8 @@ class NAIPFetcher:
         Args:
             address: Street address to geocode and find imagery for
             output_dir: Directory to save downloaded files
-            image_size: Image dimensions as "width,height" string
+            image_size: Desired image size.  Pass ``None`` or ``"auto"`` to use
+                the service's native resolution for the computed bounding box.
 
         Returns:
             Tuple of (output_path, metadata)
@@ -320,7 +379,7 @@ class NAIPFetcher:
 
 
 def get_orthophoto_for_address(
-    address: str, output_dir: str = "../data", image_size: str = "2048,2048"
+    address: str, output_dir: str = "../data", image_size: Optional[str] = None
 ) -> Tuple[str, Dict]:
     """
     Convenience function to get NAIP orthophoto for an address.
@@ -328,7 +387,7 @@ def get_orthophoto_for_address(
     Args:
         address: Street address to geocode and find imagery for
         output_dir: Directory to save downloaded files
-        image_size: Image dimensions as "width,height" string
+        image_size: Desired image size.  ``None`` uses automatic calculation.
 
     Returns:
         Tuple of (output_path, metadata)
@@ -354,8 +413,11 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--image-size",
-        default="2048,2048",
-        help="Image size as 'width,height' (default: 2048,2048)",
+        default=None,
+        help=(
+            "Image size as 'width,height'. Use 'auto' or omit to fetch at "
+            "native resolution"
+        ),
     )
 
     args = parser.parse_args()
