@@ -42,7 +42,6 @@ import rasterio
 from rasterio.warp import transform_bounds, reproject, Resampling
 from rasterio.transform import from_bounds
 from pyproj import Transformer, CRS
-from pyproj.exceptions import CRSError
 
 # Point cloud processing
 try:

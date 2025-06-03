@@ -14,12 +14,8 @@ from typing import Tuple, Optional
 from geopy.geocoders import Nominatim
 from geopy.exc import GeopyError
 from pyproj import Transformer, CRS
-from pyproj.exceptions import CRSError
 import numpy as np
 import laspy
-import requests
-import os
-import json
 
 # Set up logging
 logger = logging.getLogger(__name__)
