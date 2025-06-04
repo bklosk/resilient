@@ -9,7 +9,7 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import tempfile
 import shutil
 import uuid
@@ -204,6 +204,7 @@ class JobStatusResponse(BaseModel):
     output_file: Optional[str] = None
     error_message: Optional[str] = None
     metadata: Dict[str, Any] = {}
+    log_tail: List[str] = []
 
 
 @app.get("/")
@@ -239,6 +240,29 @@ async def health_check():
 def process_point_cloud_background(job_id: str, address: str, buffer_km: float):
     """Background task with enhanced error handling and thread safety."""
     temp_dir = None
+    # Setup per-job logging to capture progress
+    logs_dir = Path(__file__).parent.parent / "data" / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    log_file = logs_dir / f"{job_id}.log"
+    thread_id = threading.get_ident()
+
+    class ThreadFilter(logging.Filter):
+        def __init__(self, tid):
+            super().__init__()
+            self.tid = tid
+
+        def filter(self, record: logging.LogRecord) -> bool:
+            return record.thread == self.tid
+
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setFormatter(
+        DefaultFormatter(fmt="%(levelprefix)s %(message)s", use_colors=False)
+    )
+    file_handler.addFilter(ThreadFilter(thread_id))
+    logger.addHandler(file_handler)
+
+    # Store log file path in job metadata for later retrieval
+    update_job_status(job_id, metadata={"log_file": str(log_file)})
 
     try:
         # Update job status to processing
@@ -529,6 +553,8 @@ def process_point_cloud_background(job_id: str, address: str, buffer_km: float):
         # Always clean up temporary directory
         if temp_dir:
             cleanup_temp_dir(temp_dir)
+        logger.removeHandler(file_handler)
+        file_handler.close()
 
 
 @app.post("/process", response_model=ProcessResponse)
@@ -613,6 +639,17 @@ async def get_job_status(job_id: str):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
+    # Read last 20 log lines if log file exists
+    log_tail: List[str] = []
+    log_file = job.metadata.get("log_file")
+    if log_file:
+        try:
+            with open(log_file, "r") as fh:
+                lines = fh.readlines()[-20:]
+                log_tail = [ln.strip() for ln in lines if ln.strip()]
+        except Exception as e:
+            logger.warning(f"Could not read log file for job {job_id}: {e}")
+
     return JobStatusResponse(
         job_id=job.job_id,
         status=job.status,
@@ -622,6 +659,7 @@ async def get_job_status(job_id: str):
         output_file=job.output_file,
         error_message=job.error_message,
         metadata=job.metadata,
+        log_tail=log_tail,
     )
 
 
