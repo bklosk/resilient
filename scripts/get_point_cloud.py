@@ -232,7 +232,9 @@ class PointCloudDatasetFinder:
             logger.warning(f"Failed to get EPT metadata for {dataset_name}: {e}")
             return None
 
-    def _prepare_download(self, dataset_name: str, output_dir: str) -> Tuple[str, Optional[Dict]]:
+    def _prepare_download(
+        self, dataset_name: str, output_dir: str
+    ) -> Tuple[str, Optional[Dict]]:
         """Create dataset directory and fetch EPT metadata."""
         dataset_dir = os.path.join(output_dir, dataset_name.replace("/", "_"))
         os.makedirs(dataset_dir, exist_ok=True)
@@ -256,19 +258,6 @@ class PointCloudDatasetFinder:
             dataset_dir, metadata = self._prepare_download(dataset_name, output_dir)
             if not metadata:
                 return False
-
-            # Get hierarchy information to understand data structure
-            hierarchy_key = f"{dataset_name}/ept-hierarchy/0-0-0-0.json"
-            try:
-                response = self.s3_client.get_object(
-                    Bucket=self.bucket_name, Key=hierarchy_key
-                )
-                hierarchy = json.loads(response["Body"].read().decode("utf-8"))
-
-                hierarchy_path = self.json_utils.save_metadata(
-                    hierarchy, dataset_dir, "hierarchy.json"
-                )
-                logger.info(f"Saved hierarchy data to: {hierarchy_path}")
 
             # Get hierarchy information to understand data structure
             hierarchy_key = f"{dataset_name}/ept-hierarchy/0-0-0-0.json"
@@ -1029,7 +1018,6 @@ class PointCloudDatasetFinder:
             # Fall back to original method
             return self.select_best_dataset_for_location(datasets, lat, lon)
 
-
         scored_datasets = []
 
         ortho_center = (
@@ -1046,11 +1034,17 @@ class PointCloudDatasetFinder:
             if bounds and len(bounds) >= 4:
                 if len(bounds) == 6:
                     ds_xmin, ds_ymin, ds_xmax, ds_ymax = (
-                        bounds[0], bounds[1], bounds[3], bounds[4]
+                        bounds[0],
+                        bounds[1],
+                        bounds[3],
+                        bounds[4],
                     )
                 else:
                     ds_xmin, ds_ymin, ds_xmax, ds_ymax = (
-                        bounds[0], bounds[1], bounds[2], bounds[3]
+                        bounds[0],
+                        bounds[1],
+                        bounds[2],
+                        bounds[3],
                     )
 
                 overlap_left = max(ds_xmin, ortho_bounds_mercator["left"])
@@ -1059,15 +1053,19 @@ class PointCloudDatasetFinder:
                 overlap_top = min(ds_ymax, ortho_bounds_mercator["top"])
 
                 if overlap_left < overlap_right and overlap_bottom < overlap_top:
-                    overlap_area = (overlap_right - overlap_left) * (overlap_top - overlap_bottom)
+                    overlap_area = (overlap_right - overlap_left) * (
+                        overlap_top - overlap_bottom
+                    )
                     ortho_area = (
                         ortho_bounds_mercator["right"] - ortho_bounds_mercator["left"]
-                    ) * (
-                        ortho_bounds_mercator["top"] - ortho_bounds_mercator["bottom"]
+                    ) * (ortho_bounds_mercator["top"] - ortho_bounds_mercator["bottom"])
+                    overlap_percentage = (
+                        overlap_area / ortho_area if ortho_area > 0 else 0
                     )
-                    overlap_percentage = overlap_area / ortho_area if ortho_area > 0 else 0
                     overlap_score = overlap_percentage * 10000
-                    logger.debug(f"Dataset {name}: overlap {overlap_percentage:.1%} of orthophoto")
+                    logger.debug(
+                        f"Dataset {name}: overlap {overlap_percentage:.1%} of orthophoto"
+                    )
                 else:
                     ds_center_x = (ds_xmin + ds_xmax) / 2
                     ds_center_y = (ds_ymin + ds_ymax) / 2
