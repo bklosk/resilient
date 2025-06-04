@@ -9,6 +9,7 @@ tqdm
 landlab
 matplotlib
 requests
+httpx
 geopy
 fastapi
 uvicorn[standard]
