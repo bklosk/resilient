@@ -119,6 +119,98 @@ class PointCloudDatasetFinder:
         logger.info(f"Found {len(matching_datasets)} datasets covering the location")
         return matching_datasets
 
+    def _score_dataset(
+        self,
+        dataset: Dict,
+        coords: Tuple[float, float],
+        extras: Dict,
+    ) -> Dict:
+        """Calculate common scoring metrics for a dataset."""
+        lat, lon = coords
+        name = dataset.get("name", "")
+        bounds = dataset.get("bounds", [])
+        points = dataset.get("points", 0)
+
+        distance_score = float("inf")
+        dataset_area = 0
+        target_coords = extras.get("target_coords")
+        if target_coords and bounds and len(bounds) >= 4:
+            if len(bounds) == 6:
+                xmin, ymin, xmax, ymax = bounds[0], bounds[1], bounds[3], bounds[4]
+            else:
+                xmin, ymin, xmax, ymax = bounds[0], bounds[1], bounds[2], bounds[3]
+
+            center_x = (xmin + xmax) / 2
+            center_y = (ymin + ymax) / 2
+            dataset_area = (xmax - xmin) * (ymax - ymin)
+            tx, ty = target_coords
+            distance_score = math.sqrt((tx - center_x) ** 2 + (ty - center_y) ** 2)
+
+        year = 0
+        for part in name.split("_"):
+            if part.isdigit() and len(part) == 4:
+                try:
+                    year = int(part)
+                    break
+                except ValueError:
+                    continue
+
+        recency_score = year if year > 0 else 1900
+        quality_score = math.log10(max(points, 1))
+
+        specificity_bonus = 0
+        if dataset_area > 0:
+            area_km2 = dataset_area / 1_000_000
+            specificity_bonus = max(0, 100 - math.log10(max(area_km2, 1)) * 20)
+
+        region_bonus = 0
+        name_upper = name.upper()
+        front_range_keywords = [
+            "DRCOG",
+            "DENVER",
+            "METRO",
+            "FRONT",
+            "BOULDER",
+            "JEFFCO",
+            "ADAMS",
+        ]
+        broad_keywords = [
+            "NWCO",
+            "SWCO",
+            "NECO",
+            "SECO",
+            "CENTRAL",
+            "WESTERN",
+            "EASTERN",
+            "NORTHERN",
+            "SOUTHERN",
+        ]
+
+        if 39.5 <= lat <= 40.5 and -105.5 <= lon <= -104.5:
+            if any(k in name_upper for k in front_range_keywords):
+                region_bonus = 500
+            elif any(k in name_upper for k in broad_keywords):
+                region_bonus = -200
+
+        state_bonus = 0
+        if 39 <= lat <= 41 and -109 <= lon <= -102:
+            if "CO" in name_upper:
+                state_bonus = 300
+
+        return {
+            "dataset": dataset,
+            "name": name,
+            "points": points,
+            "distance_score": distance_score,
+            "dataset_area": dataset_area,
+            "year": year,
+            "recency_score": recency_score,
+            "quality_score": quality_score,
+            "specificity_bonus": specificity_bonus,
+            "region_bonus": region_bonus,
+            "state_bonus": state_bonus,
+        }
+
     def get_ept_metadata(self, dataset_name: str) -> Optional[Dict]:
         """Get EPT metadata for a specific dataset from S3."""
         try:
@@ -140,27 +232,32 @@ class PointCloudDatasetFinder:
             logger.warning(f"Failed to get EPT metadata for {dataset_name}: {e}")
             return None
 
+    def _prepare_download(
+        self, dataset_name: str, output_dir: str
+    ) -> Tuple[str, Optional[Dict]]:
+        """Create dataset directory and fetch EPT metadata."""
+        dataset_dir = os.path.join(output_dir, dataset_name.replace("/", "_"))
+        os.makedirs(dataset_dir, exist_ok=True)
+
+        logger.info(f"Downloading EPT metadata for {dataset_name}")
+        metadata = self.get_ept_metadata(dataset_name)
+        if not metadata:
+            logger.error(f"Could not retrieve metadata for {dataset_name}")
+            return dataset_dir, None
+
+        metadata_path = self.json_utils.save_metadata(metadata, dataset_dir, "ept.json")
+        logger.info(f"Saved EPT metadata to: {metadata_path}")
+
+        return dataset_dir, metadata
+
     def download_dataset(
         self, dataset_name: str, output_dir: str = "downloads"
     ) -> bool:
         """Download EPT point cloud data for a dataset from S3."""
         try:
-            # Create output directory
-            dataset_dir = os.path.join(output_dir, dataset_name.replace("/", "_"))
-            os.makedirs(dataset_dir, exist_ok=True)
-
-            # First, get and save EPT metadata
-            logger.info(f"Downloading EPT metadata for {dataset_name}")
-            metadata = self.get_ept_metadata(dataset_name)
+            dataset_dir, metadata = self._prepare_download(dataset_name, output_dir)
             if not metadata:
-                logger.error(f"Could not retrieve metadata for {dataset_name}")
                 return False
-
-            # Save metadata using centralized JSON utilities
-            metadata_path = self.json_utils.save_metadata(
-                metadata, dataset_dir, "ept.json"
-            )
-            logger.info(f"Saved EPT metadata to: {metadata_path}")
 
             # Get hierarchy information to understand data structure
             hierarchy_key = f"{dataset_name}/ept-hierarchy/0-0-0-0.json"
@@ -238,27 +335,14 @@ class PointCloudDatasetFinder:
             bool: True if successful, False otherwise
         """
         try:
-            # Create output directory
-            dataset_dir = os.path.join(output_dir, dataset_name.replace("/", "_"))
-            os.makedirs(dataset_dir, exist_ok=True)
-
             logger.info(
                 f"Downloading point cloud data with geographic filtering for: {dataset_name}"
             )
             logger.info(f"Target area bounds: {ortho_bounds} (CRS: {ortho_crs})")
 
-            # First, get and save EPT metadata
-            logger.info(f"Downloading EPT metadata for {dataset_name}")
-            metadata = self.get_ept_metadata(dataset_name)
+            dataset_dir, metadata = self._prepare_download(dataset_name, output_dir)
             if not metadata:
-                logger.error(f"Could not retrieve metadata for {dataset_name}")
                 return False
-
-            # Save metadata
-            metadata_path = self.json_utils.save_metadata(
-                metadata, dataset_dir, "ept.json"
-            )
-            logger.info(f"Saved EPT metadata to: {metadata_path}")
 
             # Get dataset CRS and bounds from metadata
             dataset_srs = metadata.get("srs", {})
@@ -800,110 +884,28 @@ class PointCloudDatasetFinder:
         scored_datasets = []
 
         for dataset in datasets:
-            name = dataset.get("name", "")
-            bounds = dataset.get("bounds", [])
-            points = dataset.get("points", 0)
+            metrics = self._score_dataset(
+                dataset,
+                (lat, lon),
+                {"target_coords": (target_x, target_y)},
+            )
 
-            # Calculate geographic proximity score
-            distance_score = float("inf")  # Default to infinite distance
-            dataset_area = 0  # Dataset coverage area
+            distance_score = metrics["distance_score"]
+            dataset_area = metrics["dataset_area"]
+            recency_score = metrics["recency_score"]
+            quality_score = metrics["quality_score"]
+            specificity_bonus = metrics["specificity_bonus"]
+            region_bonus = metrics["region_bonus"]
+            state_bonus = metrics["state_bonus"]
 
-            if bounds and len(bounds) >= 4:
-                # Calculate dataset center and area in Web Mercator
-                if len(bounds) == 6:  # [xmin, ymin, zmin, xmax, ymax, zmax]
-                    xmin, ymin, xmax, ymax = bounds[0], bounds[1], bounds[3], bounds[4]
-                else:  # [xmin, ymin, xmax, ymax]
-                    xmin, ymin, xmax, ymax = bounds[0], bounds[1], bounds[2], bounds[3]
-
-                center_x = (xmin + xmax) / 2
-                center_y = (ymin + ymax) / 2
-                dataset_area = (xmax - xmin) * (ymax - ymin)  # Area in square meters
-
-                # Calculate distance in meters
-                distance = math.sqrt(
-                    (target_x - center_x) ** 2 + (target_y - center_y) ** 2
-                )
-                distance_score = distance  # Lower is better
-
-            # Extract year from dataset name
-            year = 0
-            for part in name.split("_"):
-                if part.isdigit() and len(part) == 4:
-                    try:
-                        year = int(part)
-                        break
-                    except ValueError:
-                        continue
-
-            # Calculate recency score (higher is better)
-            current_year = 2025  # Update as needed
-            recency_score = year if year > 0 else 1900
-
-            # Calculate quality score based on point count (log scale to prevent overwhelming)
-            quality_score = math.log10(max(points, 1))
-
-            # Regional specificity bonus - prefer smaller, more focused datasets over broad regional ones
-            # This helps choose metropolitan datasets (like DRCOG) over state-wide datasets (like NWCO)
-            specificity_bonus = 0
-            if dataset_area > 0:
-                # Convert area to km²
-                area_km2 = dataset_area / 1_000_000
-                # Prefer datasets with smaller coverage areas (more specific)
-                # Use logarithmic scale to prevent overwhelming the score
-                specificity_bonus = max(0, 100 - math.log10(max(area_km2, 1)) * 20)
-
-            # Regional keyword matching for better geographic classification
-            region_bonus = 0
-            name_upper = name.upper()
-
-            # Check for Front Range/Denver metro area keywords (good for Boulder)
-            front_range_keywords = [
-                "DRCOG",
-                "DENVER",
-                "METRO",
-                "FRONT",
-                "BOULDER",
-                "JEFFCO",
-                "ADAMS",
-            ]
-            # Check for broader regional keywords (less specific)
-            broad_keywords = [
-                "NWCO",
-                "SWCO",
-                "NECO",
-                "SECO",
-                "CENTRAL",
-                "WESTERN",
-                "EASTERN",
-                "NORTHERN",
-                "SOUTHERN",
-            ]
-
-            # Bonus for Front Range/metro area datasets when in Colorado Front Range
-            if 39.5 <= lat <= 40.5 and -105.5 <= lon <= -104.5:  # Front Range area
-                if any(keyword in name_upper for keyword in front_range_keywords):
-                    region_bonus = 500  # Strong preference for metro datasets
-                elif any(keyword in name_upper for keyword in broad_keywords):
-                    region_bonus = -200  # Slight penalty for broad regional datasets
-
-            # State/region matching
-            state_bonus = 0
-            if (
-                lat >= 39 and lat <= 41 and lon >= -109 and lon <= -102
-            ):  # Colorado bounds
-                if "CO" in name_upper:
-                    state_bonus = 300  # Moderate bonus for Colorado datasets
-
-            # Composite score with improved weighting
-            # Normalize distance to km and weight factors appropriately
             distance_penalty = (
                 distance_score / 1000 if distance_score != float("inf") else 1000
             )
-            recency_bonus = (recency_score - 2000) * 8  # Reduced weight for recency
-            quality_bonus = quality_score * 3  # Reduced weight for quality
+            recency_bonus = (recency_score - 2000) * 8
+            quality_bonus = quality_score * 3
 
             composite_score = (
-                -distance_penalty * 2  # Distance is most important (doubled weight)
+                -distance_penalty * 2
                 + recency_bonus
                 + quality_bonus
                 + specificity_bonus
@@ -911,9 +913,8 @@ class PointCloudDatasetFinder:
                 + state_bonus
             )
 
-            scored_datasets.append(
+            metrics.update(
                 {
-                    "dataset": dataset,
                     "score": composite_score,
                     "distance_km": (
                         distance_score / 1000
@@ -921,17 +922,14 @@ class PointCloudDatasetFinder:
                         else float("inf")
                     ),
                     "area_km2": dataset_area / 1_000_000 if dataset_area > 0 else 0,
-                    "year": year,
-                    "points": points,
-                    "name": name,
-                    "specificity_bonus": specificity_bonus,
-                    "region_bonus": region_bonus,
                 }
             )
 
+            scored_datasets.append(metrics)
+
             logger.debug(
-                f"Dataset {name}: distance={distance_score/1000:.1f}km, area={dataset_area/1_000_000:.0f}km², "
-                f"year={year}, points={points:,}, specificity={specificity_bonus:.1f}, "
+                f"Dataset {metrics['name']}: distance={distance_score/1000:.1f}km, area={dataset_area/1_000_000:.0f}km², "
+                f"year={metrics['year']}, points={metrics['points']:,}, specificity={specificity_bonus:.1f}, "
                 f"region={region_bonus:.1f}, score={composite_score:.1f}"
             )
 
@@ -1022,25 +1020,26 @@ class PointCloudDatasetFinder:
 
         scored_datasets = []
 
+        ortho_center = (
+            (ortho_bounds_mercator["left"] + ortho_bounds_mercator["right"]) / 2,
+            (ortho_bounds_mercator["bottom"] + ortho_bounds_mercator["top"]) / 2,
+        )
+
         for dataset in datasets:
             name = dataset.get("name", "")
             bounds = dataset.get("bounds", [])
-            points = dataset.get("points", 0)
-
-            # Calculate overlap with orthophoto
             overlap_score = 0
             distance_score = float("inf")
 
             if bounds and len(bounds) >= 4:
-                # Dataset bounds in Web Mercator
-                if len(bounds) == 6:  # [xmin, ymin, zmin, xmax, ymax, zmax]
+                if len(bounds) == 6:
                     ds_xmin, ds_ymin, ds_xmax, ds_ymax = (
                         bounds[0],
                         bounds[1],
                         bounds[3],
                         bounds[4],
                     )
-                else:  # [xmin, ymin, xmax, ymax]
+                else:
                     ds_xmin, ds_ymin, ds_xmax, ds_ymax = (
                         bounds[0],
                         bounds[1],
@@ -1048,14 +1047,12 @@ class PointCloudDatasetFinder:
                         bounds[3],
                     )
 
-                # Calculate overlap area
                 overlap_left = max(ds_xmin, ortho_bounds_mercator["left"])
                 overlap_right = min(ds_xmax, ortho_bounds_mercator["right"])
                 overlap_bottom = max(ds_ymin, ortho_bounds_mercator["bottom"])
                 overlap_top = min(ds_ymax, ortho_bounds_mercator["top"])
 
                 if overlap_left < overlap_right and overlap_bottom < overlap_top:
-                    # There is overlap
                     overlap_area = (overlap_right - overlap_left) * (
                         overlap_top - overlap_bottom
                     )
@@ -1065,113 +1062,41 @@ class PointCloudDatasetFinder:
                     overlap_percentage = (
                         overlap_area / ortho_area if ortho_area > 0 else 0
                     )
-                    overlap_score = overlap_percentage * 10000  # Scale up for scoring
-
+                    overlap_score = overlap_percentage * 10000
                     logger.debug(
                         f"Dataset {name}: overlap {overlap_percentage:.1%} of orthophoto"
                     )
                 else:
-                    # No overlap, calculate distance between centers
                     ds_center_x = (ds_xmin + ds_xmax) / 2
                     ds_center_y = (ds_ymin + ds_ymax) / 2
-                    ortho_center_x = (
-                        ortho_bounds_mercator["left"] + ortho_bounds_mercator["right"]
-                    ) / 2
-                    ortho_center_y = (
-                        ortho_bounds_mercator["bottom"] + ortho_bounds_mercator["top"]
-                    ) / 2
-
-                    distance = math.sqrt(
-                        (ds_center_x - ortho_center_x) ** 2
-                        + (ds_center_y - ortho_center_y) ** 2
+                    distance_score = math.sqrt(
+                        (ds_center_x - ortho_center[0]) ** 2
+                        + (ds_center_y - ortho_center[1]) ** 2
                     )
-                    distance_score = distance
 
-            # Extract year from dataset name
-            year = 0
-            for part in name.split("_"):
-                if part.isdigit() and len(part) == 4:
-                    try:
-                        year = int(part)
-                        break
-                    except ValueError:
-                        continue
+            metrics = self._score_dataset(
+                dataset,
+                (lat, lon),
+                {"target_coords": ortho_center},
+            )
 
-            # Calculate scores
-            recency_score = year if year > 0 else 1900
-            quality_score = math.log10(max(points, 1))
+            dataset_area = metrics["dataset_area"]
+            recency_score = metrics["recency_score"]
+            quality_score = metrics["quality_score"]
+            specificity_bonus = metrics["specificity_bonus"]
+            region_bonus = metrics["region_bonus"]
+            state_bonus = metrics["state_bonus"]
 
-            # Calculate dataset area for specificity bonus
-            dataset_area = 0
-            if bounds and len(bounds) >= 4:
-                if len(bounds) == 6:  # [xmin, ymin, zmin, xmax, ymax, zmax]
-                    xmin, ymin, xmax, ymax = bounds[0], bounds[1], bounds[3], bounds[4]
-                else:  # [xmin, ymin, xmax, ymax]
-                    xmin, ymin, xmax, ymax = bounds[0], bounds[1], bounds[2], bounds[3]
-                dataset_area = (xmax - xmin) * (ymax - ymin)  # Area in square meters
-
-            # Regional specificity bonus - prefer smaller, more focused datasets
-            specificity_bonus = 0
-            if dataset_area > 0:
-                area_km2 = dataset_area / 1_000_000
-                specificity_bonus = max(0, 100 - math.log10(max(area_km2, 1)) * 20)
-
-            # Regional keyword matching for better geographic classification
-            region_bonus = 0
-            name_upper = name.upper()
-
-            # Check for Front Range/Denver metro area keywords (good for Boulder)
-            front_range_keywords = [
-                "DRCOG",
-                "DENVER",
-                "METRO",
-                "FRONT",
-                "BOULDER",
-                "JEFFCO",
-                "ADAMS",
-            ]
-            # Check for broader regional keywords (less specific)
-            broad_keywords = [
-                "NWCO",
-                "SWCO",
-                "NECO",
-                "SECO",
-                "CENTRAL",
-                "WESTERN",
-                "EASTERN",
-                "NORTHERN",
-                "SOUTHERN",
-            ]
-
-            # Bonus for Front Range/metro area datasets when in Colorado Front Range
-            if 39.5 <= lat <= 40.5 and -105.5 <= lon <= -104.5:  # Front Range area
-                if any(keyword in name_upper for keyword in front_range_keywords):
-                    region_bonus = 500  # Strong preference for metro datasets
-                elif any(keyword in name_upper for keyword in broad_keywords):
-                    region_bonus = -200  # Penalty for broad regional datasets
-
-            # State/region bonus
-            state_bonus = 0
-            if (
-                lat >= 39 and lat <= 41 and lon >= -109 and lon <= -102
-            ):  # Colorado bounds
-                if "CO" in name.upper():
-                    state_bonus = 300
-
-            # Composite score - balance overlap with geographic appropriateness
             if overlap_score > 0:
-                # If there's overlap, use balanced scoring that considers geographic appropriateness
                 distance_penalty = (
                     distance_score / 1000 if distance_score != float("inf") else 0
                 )
                 recency_bonus = (recency_score - 2000) * 8
-                quality_bonus = (
-                    quality_score * 3
-                )  # Reduced weight to prevent domination
+                quality_bonus = quality_score * 3
 
                 composite_score = (
-                    overlap_score * 10  # Moderate weight for overlap
-                    + -distance_penalty * 2  # Distance penalty (doubled weight)
+                    overlap_score * 10
+                    + -distance_penalty * 2
                     + recency_bonus
                     + quality_bonus
                     + specificity_bonus
@@ -1179,7 +1104,6 @@ class PointCloudDatasetFinder:
                     + state_bonus
                 )
             else:
-                # If no overlap, use distance-based scoring (heavily penalized)
                 distance_penalty = distance_score / 1000
                 composite_score = (
                     -(distance_penalty * 10)
@@ -1188,9 +1112,8 @@ class PointCloudDatasetFinder:
                     + state_bonus
                 )
 
-            scored_datasets.append(
+            metrics.update(
                 {
-                    "dataset": dataset,
                     "score": composite_score,
                     "overlap_score": overlap_score,
                     "distance_km": (
@@ -1199,14 +1122,10 @@ class PointCloudDatasetFinder:
                         else float("inf")
                     ),
                     "area_km2": dataset_area / 1_000_000 if dataset_area > 0 else 0,
-                    "year": year,
-                    "points": points,
-                    "name": name,
-                    "specificity_bonus": specificity_bonus,
-                    "region_bonus": region_bonus,
                 }
             )
 
+            scored_datasets.append(metrics)
         # Sort by score (highest first)
         scored_datasets.sort(key=lambda x: x["score"], reverse=True)
 

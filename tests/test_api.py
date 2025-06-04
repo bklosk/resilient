@@ -55,7 +55,10 @@ def client(tmp_path, monkeypatch):
     stub_orth = types.ModuleType("get_orthophoto")
 
     class DummyFetcher:
-        pass
+        def get_orthophoto_for_address(self, address, output_dir=".", image_size=None):
+            output = Path(tmp_path) / "dummy.tif"
+            output.write_text("img")
+            return str(output), {"output_path": str(output)}
 
     stub_orth.NAIPFetcher = DummyFetcher
 
@@ -147,3 +150,10 @@ def test_jobs_listing(client):
     assert list_resp.status_code == 200
     jobs = list_resp.json()
     assert any(j["job_id"] == job_id for j in jobs)
+
+
+def test_orthophoto_download(client):
+    client, _ = client
+    resp = client.post("/orthophoto", json={"address": "789 Low St"})
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("image/")

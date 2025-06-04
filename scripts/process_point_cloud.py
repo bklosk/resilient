@@ -491,6 +491,51 @@ class PointCloudColorizer:
                 "No coordinate overlap detected. Attempting CRS correction..."
             )
 
+            # Calculate how far off the data is
+            pc_center_x = (pc_x_min + pc_x_max) / 2
+            pc_center_y = (pc_y_min + pc_y_max) / 2
+            distance_from_center = (
+                (ortho_center_x - pc_center_x) ** 2
+                + (ortho_center_y - pc_center_y) ** 2
+            ) ** 0.5
+
+            logger.error(f"SIGNIFICANT COORDINATE MISMATCH DETECTED!")
+            logger.error(f"Point cloud center: ({pc_center_x:.6f}, {pc_center_y:.6f})")
+            logger.error(
+                f"Orthophoto center: ({ortho_center_x:.6f}, {ortho_center_y:.6f})"
+            )
+            logger.error(
+                f"Distance between centers: {distance_from_center:.6f} degrees ({distance_from_center * 111320:.1f} meters)"
+            )
+
+            if distance_from_center > 0.001:  # More than ~100 meters apart
+                logger.error(
+                    "The orthophoto and point cloud appear to be from different locations!"
+                )
+                logger.error(
+                    "SOLUTION: Use the correct bounding box for orthophoto download:"
+                )
+
+                # Calculate the correct bounding box
+                buffer_deg = 0.001  # ~100 meter buffer
+                correct_bbox = {
+                    "west": pc_x_min - buffer_deg,
+                    "south": pc_y_min - buffer_deg,
+                    "east": pc_x_max + buffer_deg,
+                    "north": pc_y_max + buffer_deg,
+                }
+
+                bbox_string = f"{correct_bbox['west']:.8f},{correct_bbox['south']:.8f},{correct_bbox['east']:.8f},{correct_bbox['north']:.8f}"
+                logger.error(f"Correct bounding box: {bbox_string}")
+                logger.error(
+                    f'Download command: python scripts/get_orthophoto.py --bbox "{bbox_string}"'
+                )
+
+                # For this run, we'll proceed with a warning, but results will be poor
+                logger.warning(
+                    "Continuing with current data, but expect very low coverage..."
+                )
+
             # Try transforming orthophoto bounds to point cloud's original CRS for comparison
             original_x_coords = las_data.x
             original_y_coords = las_data.y
@@ -560,9 +605,71 @@ class PointCloudColorizer:
 
         # Convert to pixel coordinates
         logger.info("Converting to pixel coordinates...")
-        rows, cols = rasterio.transform.rowcol(
-            ortho_dataset.transform, transformed_x, transformed_y
-        )
+
+        # DEBUG: Examine the geotransform matrix
+        logger.info(f"DEBUG - Orthophoto transform matrix: {ortho_dataset.transform}")
+        logger.info(f"DEBUG - Transform breakdown:")
+        logger.info(f"  Pixel width (X resolution): {ortho_dataset.transform[0]}")
+        logger.info(f"  Row rotation: {ortho_dataset.transform[1]}")
+        logger.info(f"  Upper-left X coordinate: {ortho_dataset.transform[2]}")
+        logger.info(f"  Column rotation: {ortho_dataset.transform[3]}")
+        logger.info(f"  Pixel height (Y resolution): {ortho_dataset.transform[4]}")
+        logger.info(f"  Upper-left Y coordinate: {ortho_dataset.transform[5]}")
+
+        # Calculate expected transform based on bounds and image dimensions
+        expected_pixel_width = (
+            ortho_dataset.bounds.right - ortho_dataset.bounds.left
+        ) / ortho_dataset.width
+        expected_pixel_height = (
+            ortho_dataset.bounds.top - ortho_dataset.bounds.bottom
+        ) / ortho_dataset.height
+
+        logger.info(f"DEBUG - Expected pixel dimensions:")
+        logger.info(f"  Expected pixel width: {expected_pixel_width}")
+        logger.info(f"  Expected pixel height: {expected_pixel_height}")
+        logger.info(f"  Actual pixel width: {ortho_dataset.transform[0]}")
+        logger.info(f"  Actual pixel height: {abs(ortho_dataset.transform[4])}")
+
+        # Check if transform seems reasonable
+        transform_issues = []
+        if (
+            abs(ortho_dataset.transform[0] - expected_pixel_width)
+            > expected_pixel_width * 0.1
+        ):
+            transform_issues.append("X pixel size mismatch")
+        if (
+            abs(abs(ortho_dataset.transform[4]) - expected_pixel_height)
+            > expected_pixel_height * 0.1
+        ):
+            transform_issues.append("Y pixel size mismatch")
+
+        if transform_issues:
+            logger.warning(
+                f"Potential transform issues detected: {', '.join(transform_issues)}"
+            )
+            logger.warning("Attempting to create corrected transform...")
+
+            # Create a corrected transform based on bounds
+            corrected_transform = from_bounds(
+                ortho_dataset.bounds.left,
+                ortho_dataset.bounds.bottom,
+                ortho_dataset.bounds.right,
+                ortho_dataset.bounds.top,
+                ortho_dataset.width,
+                ortho_dataset.height,
+            )
+
+            logger.info(f"DEBUG - Corrected transform: {corrected_transform}")
+
+            # Try with corrected transform
+            rows, cols = rasterio.transform.rowcol(
+                corrected_transform, transformed_x, transformed_y
+            )
+            logger.info("Using corrected transform for pixel coordinate calculation")
+        else:
+            rows, cols = rasterio.transform.rowcol(
+                ortho_dataset.transform, transformed_x, transformed_y
+            )
 
         pixel_cols = np.array(cols, dtype=np.int32)
         pixel_rows = np.array(rows, dtype=np.int32)
@@ -571,7 +678,7 @@ class PointCloudColorizer:
         logger.info(f"DEBUG - Coordinate transformation samples (first 5):")
         for i in range(min(5, len(transformed_x))):
             logger.info(
-                f"  Point {i}: World({transformed_x[i]:.2f}, {transformed_y[i]:.2f}) -> Pixel({pixel_cols[i]}, {pixel_rows[i]})"
+                f"  Point {i}: World({transformed_x[i]:.6f}, {transformed_y[i]:.6f}) -> Pixel({pixel_cols[i]}, {pixel_rows[i]})"
             )
 
         logger.info(f"DEBUG - Pixel coordinate ranges:")
@@ -598,65 +705,55 @@ class PointCloudColorizer:
             f"({100*num_valid/total_points:.1f}%)"
         )
 
-        if num_valid == 0:
-            logger.error("No points fall within orthophoto bounds!")
+        # Check if coverage is too low (less than 10% of points)
+        coverage_threshold = 0.10  # 10%
+        current_coverage = num_valid / total_points
 
-            # Try a buffered approach - expand the search area
-            logger.info("Attempting buffered coordinate matching...")
+        if num_valid == 0 or current_coverage < coverage_threshold:
+            if num_valid == 0:
+                logger.error("No points fall within orthophoto bounds!")
+            else:
+                logger.warning(
+                    f"Low coverage detected: only {current_coverage:.1%} of points are within orthophoto bounds"
+                )
 
-            # Calculate buffer distance as a percentage of the dataset size
-            ortho_width = ortho_dataset.bounds.right - ortho_dataset.bounds.left
-            ortho_height = ortho_dataset.bounds.top - ortho_dataset.bounds.bottom
+            logger.info(
+                "Attempting to download corrected orthophoto with proper bounds..."
+            )
 
-            # Use a more generous buffer for small orthophotos
-            # Minimum buffer of 50 meters, or 50% of orthophoto size, whichever is larger
-            percentage_buffer = min(ortho_width, ortho_height) * 0.5  # 50% buffer
-            minimum_buffer = 50.0  # 50 meters minimum
-            buffer_distance = max(percentage_buffer, minimum_buffer)
-
-            logger.info(f"Using buffer distance: {buffer_distance:.2f} meters")
-
-            # Expand orthophoto bounds
-            buffered_bounds = {
-                "left": ortho_dataset.bounds.left - buffer_distance,
-                "right": ortho_dataset.bounds.right + buffer_distance,
-                "bottom": ortho_dataset.bounds.bottom - buffer_distance,
-                "top": ortho_dataset.bounds.top + buffer_distance,
+            # Calculate point cloud bounds for corrected orthophoto
+            pc_bounds = {
+                "west": pc_x_min,
+                "east": pc_x_max,
+                "south": pc_y_min,
+                "north": pc_y_max,
             }
 
-            # Re-check with buffered bounds
-            buffered_valid_mask = (
-                (transformed_x >= buffered_bounds["left"])
-                & (transformed_x <= buffered_bounds["right"])
-                & (transformed_y >= buffered_bounds["bottom"])
-                & (transformed_y <= buffered_bounds["top"])
-            )
+            try:
+                # Download corrected orthophoto
+                corrected_ortho_path = self.download_corrected_orthophoto(pc_bounds)
 
-            num_buffered_valid = np.sum(buffered_valid_mask)
-            logger.info(
-                f"Points within buffered area: {num_buffered_valid:,}/{total_points:,}"
-            )
-
-            if num_buffered_valid > 0:
-                logger.warning(
-                    f"Found {num_buffered_valid} points near orthophoto bounds but outside exact bounds."
-                )
-                logger.warning(
-                    "This suggests coordinate system issues or small misalignment."
+                logger.info(
+                    "Successfully downloaded corrected orthophoto. Retrying colorization..."
                 )
 
-                # For these points, we'll need to use interpolation or nearest neighbor
-                # For now, let's create a diagnostic message and continue with the error
+                # Reload with corrected orthophoto and retry colorization
+                with rasterio.open(corrected_ortho_path) as corrected_dataset:
+                    # Recursive call with corrected orthophoto
+                    return self.colorize_point_cloud(
+                        las_data, corrected_dataset, source_crs
+                    )
+
+            except Exception as e:
+                logger.error(f"Failed to download corrected orthophoto: {e}")
                 logger.error(
-                    "Consider using a larger orthophoto area or check coordinate system alignment."
-                )
-            else:
-                logger.error("No points found even with buffered search area.")
-                logger.error(
-                    "Point cloud and orthophoto appear to be from completely different locations."
+                    "Proceeding with original orthophoto but expect poor results..."
                 )
 
-            raise ValueError("No points within orthophoto bounds")
+                if num_valid == 0:
+                    raise ValueError(
+                        "No points within orthophoto bounds and auto-correction failed"
+                    )
 
         # Initialize color array
         colors = np.zeros((total_points, 3), dtype=np.uint16)
@@ -1091,6 +1188,177 @@ class PointCloudColorizer:
         except Exception as e:
             logger.error(f"Failed to fetch orthophoto: {e}")
             raise
+
+    def download_corrected_orthophoto(
+        self, pc_bounds: Dict[str, float], output_path: str = None
+    ) -> str:
+        """
+        Download orthophoto with bounds that properly cover the point cloud.
+
+        Args:
+            pc_bounds: Point cloud bounds in WGS84 {'west': x_min, 'east': x_max, 'south': y_min, 'north': y_max}
+            output_path: Optional path for output file
+
+        Returns:
+            Path to downloaded orthophoto
+        """
+        import requests
+        import json
+
+        if output_path is None:
+            output_path = str(self.output_dir / "corrected_orthophoto.tif")
+
+        logger.info(f"Downloading corrected orthophoto with bounds: {pc_bounds}")
+
+        # Add 10% buffer to ensure full coverage
+        width_deg = pc_bounds["east"] - pc_bounds["west"]
+        height_deg = pc_bounds["north"] - pc_bounds["south"]
+        buffer_x = width_deg * 0.1
+        buffer_y = height_deg * 0.1
+
+        min_lon = pc_bounds["west"] - buffer_x
+        min_lat = pc_bounds["south"] - buffer_y
+        max_lon = pc_bounds["east"] + buffer_x
+        max_lat = pc_bounds["north"] + buffer_y
+
+        bbox = f"{min_lon},{min_lat},{max_lon},{max_lat}"
+
+        # Calculate appropriate image size (aim for ~1m resolution)
+        width_m = (
+            width_deg
+            * 111320
+            * np.cos(np.radians((pc_bounds["north"] + pc_bounds["south"]) / 2))
+        )
+        height_m = height_deg * 111320
+
+        # Target ~2 meter per pixel for reasonable file size, but cap at 2000px
+        target_width = min(max(int(width_m / 2), 200), 2000)
+        target_height = min(max(int(height_m / 2), 200), 2000)
+        image_size = f"{target_width},{target_height}"
+
+        logger.info(f"Requesting image size: {target_width} x {target_height}")
+        logger.info(f"Coverage area: {width_m:.0f}m x {height_m:.0f}m")
+
+        # Use USGS NAIPPlus ImageServer (same as get_orthophoto.py)
+        service_url = "https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPPlus/ImageServer/exportImage"
+
+        # Try multiple sizes in case the requested size is too large
+        fallback_sizes = ["2048,2048", "1024,1024", "512,512"]
+        sizes_to_try = [image_size] + fallback_sizes
+
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_sizes = []
+        for size in sizes_to_try:
+            if size not in seen:
+                seen.add(size)
+                unique_sizes.append(size)
+
+        last_error = None
+
+        for attempt, size in enumerate(unique_sizes):
+            params = {
+                "bbox": bbox,
+                "bboxSR": 4326,  # WGS84 coordinate system
+                "size": size,  # Output image size in pixels
+                "imageSR": 4326,  # Output coordinate system
+                "format": "tiff",  # Output format
+                "f": "image",  # Response format
+            }
+
+            try:
+                logger.info(
+                    f"Making request to NAIP service (attempt {attempt + 1}/{len(unique_sizes)}):"
+                )
+                logger.info(f"  Bounding box: {bbox}")
+                logger.info(f"  Image size: {size}")
+
+                response = requests.get(service_url, params=params, timeout=120)
+                response.raise_for_status()
+
+                file_size = len(response.content)
+
+                # Check if response is actually an image by examining content
+                if file_size < 1000:  # Very small response is likely an error
+                    try:
+                        error_data = response.json()
+                        error_msg = error_data.get("error", {}).get(
+                            "message", "Unknown service error"
+                        )
+                        if (
+                            "size limit" in error_msg.lower()
+                            and attempt < len(unique_sizes) - 1
+                        ):
+                            logger.info(
+                                f"  Size {size} too large, trying smaller size..."
+                            )
+                            last_error = Exception(f"NAIP service error: {error_msg}")
+                            continue
+                        else:
+                            raise Exception(f"NAIP service error: {error_msg}")
+                    except json.JSONDecodeError:
+                        pass  # Not JSON, continue with normal processing
+
+                # Additional check: if content type suggests image but size is suspiciously small
+                content_type = response.headers.get("content-type", "")
+                if content_type.startswith("image/") and file_size < 1000:
+                    if attempt < len(unique_sizes) - 1:
+                        logger.info(
+                            f"  Received very small image ({file_size} bytes), trying smaller size..."
+                        )
+                        last_error = Exception(
+                            f"Received very small image ({file_size} bytes), likely an error response"
+                        )
+                        continue
+                    else:
+                        raise Exception(
+                            f"Received very small image ({file_size} bytes), likely an error response"
+                        )
+
+                # Save the image
+                Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+                Path(output_path).write_bytes(response.content)
+
+                logger.info(
+                    f"Successfully downloaded corrected orthophoto: {output_path}"
+                )
+                logger.info(f"File size: {file_size / 1024 / 1024:.1f} MB")
+                if size != image_size:
+                    logger.info(
+                        f"Note: Used fallback size {size} instead of requested {image_size}"
+                    )
+
+                # Save metadata
+                metadata = {
+                    "bbox": bbox,
+                    "bbox_array": [min_lon, min_lat, max_lon, max_lat],
+                    "image_size": [int(size.split(",")[0]), int(size.split(",")[1])],
+                    "crs": "EPSG:4326",
+                    "source": "USGS NAIPPlus - Auto-corrected",
+                    "point_cloud_bounds": pc_bounds,
+                    "service_url": service_url,
+                    "request_params": params,
+                }
+
+                metadata_path = str(Path(output_path).with_suffix(".json"))
+                with open(metadata_path, "w") as f:
+                    json.dump(metadata, f, indent=2)
+
+                return output_path
+
+            except Exception as e:
+                logger.error(f"Attempt {attempt + 1} failed: {e}")
+                last_error = e
+                if attempt < len(unique_sizes) - 1:
+                    continue
+                else:
+                    break
+
+        # If we get here, all attempts failed
+        logger.error(f"All download attempts failed. Last error: {last_error}")
+        raise Exception(
+            f"Failed to download corrected orthophoto after {len(unique_sizes)} attempts: {last_error}"
+        )
 
     def process_from_address(self, address: str) -> str:
         """
