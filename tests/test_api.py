@@ -118,6 +118,8 @@ def test_process_flow(client):
     assert status_resp.status_code == 200
     status_data = status_resp.json()
     assert status_data["status"] == app_module.JobStatus.COMPLETED
+    assert "log_tail" in status_data
+    assert isinstance(status_data["log_tail"], list)
 
     download = client.get(f"/download/{job_id}")
     assert download.status_code == 200

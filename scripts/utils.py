@@ -29,7 +29,8 @@ class GeocodeUtils:
         self.user_agent = "photogrammetry_geocoder"
         # Primary geocoder (Photon). Additional services can be appended if needed.
         self.geolocator = Photon(user_agent=self.user_agent, timeout=10)
-        self.geocoders = [self.geolocator]
+        self.arcgis = ArcGIS(user_agent=self.user_agent, timeout=10)
+        self.geocoders = [self.geolocator, self.arcgis]
 
     def geocode_address(
         self, address: str, max_retries: int = 3
