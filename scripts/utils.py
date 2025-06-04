@@ -84,7 +84,7 @@ class CRSUtils:
 
     @staticmethod
     def detect_point_cloud_crs(las_data: laspy.LasData) -> Optional[str]:
-        """Detect CRS from point cloud coordinates using heuristics.
+        """Detect CRS from LAS header or coordinate heuristics.
 
         Args:
             las_data: LAS/LAZ point cloud data
@@ -101,6 +101,30 @@ class CRSUtils:
         logger.info(
             f"Point cloud coordinate ranges - X: {x_min:.2f} to {x_max:.2f}, Y: {y_min:.2f} to {y_max:.2f}"
         )
+
+        header = getattr(las_data, "header", None)
+        if header is not None:
+            epsg = getattr(header, "epsg", None)
+            if epsg:
+                logger.info(f"CRS detected from LAS header: EPSG:{epsg}")
+                return f"EPSG:{epsg}"
+
+            if hasattr(header, "parse_crs"):
+                try:
+                    crs_obj = header.parse_crs()
+                except Exception as e:
+                    logger.debug(f"CRS parse error: {e}")
+                    crs_obj = None
+                if crs_obj:
+                    auth = crs_obj.to_authority()
+                    if auth:
+                        code = f"{auth[0]}:{auth[1]}"
+                    else:
+                        code = crs_obj.to_string()
+                    logger.info(f"CRS detected from LAS header: {code}")
+                    return code
+
+        logger.info("No CRS in LAS header, falling back to heuristics")
 
         # Web Mercator (EPSG:3857) - common for web mapping services
         if -20037508 < x_min < 20037508 and -20037508 < y_min < 20037508:

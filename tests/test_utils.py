@@ -73,3 +73,17 @@ def test_job_helpers():
     assert updated
     job = app_module.get_job_safe(job_id)
     assert job.status == app_module.JobStatus.COMPLETED
+
+
+def test_detect_crs_from_header():
+    import types
+    from pyproj import CRS
+
+    header = types.SimpleNamespace(
+        epsg=26913,
+        parse_crs=lambda: CRS.from_epsg(26913),
+    )
+    las = types.SimpleNamespace(x=[0, 1], y=[0, 1], header=header)
+
+    crs = utils.CRSUtils.detect_point_cloud_crs(las)
+    assert crs == "EPSG:26913"
