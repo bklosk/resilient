@@ -780,6 +780,24 @@ async def download_orthophoto(request: OrthophotoRequest):
         raise HTTPException(status_code=500, detail="Failed to fetch orthophoto")
 
 
+@app.get("/flood-overhead")
+async def flood_overhead(address: str, bbox_m: float = 64.0):
+    """Return a colored PNG of 100-year flood depth for an address."""
+    try:
+        from flood_depth import generate
+        from overhead_image import render
+
+        tiff = generate(address, bbox_m)
+        png = render(tiff)
+        file_path = Path(png)
+        return FileResponse(path=str(file_path), filename=file_path.name, media_type="image/png")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating flood overhead for {address}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to generate flood image")
+
+
 def cleanup_temp_dir(temp_dir: Path):
     """Clean up temporary directory with error handling."""
     try:

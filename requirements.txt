@@ -13,3 +13,4 @@ geopy
 fastapi
 uvicorn[standard]
 boto3
+httpx<0.25
