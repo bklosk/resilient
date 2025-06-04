@@ -275,22 +275,78 @@ class PointCloudDatasetFinder:
             except Exception as e:
                 logger.warning(f"Could not download hierarchy data: {e}")
 
-            # Download some sample EPT data tiles
-            # Start with the root tile and a few high-level tiles
-            sample_tiles = [
-                "0-0-0-0.laz",  # Root tile
-                "1-0-0-0.laz",  # Level 1 tiles
-                "1-0-0-1.laz",
-                "1-0-1-0.laz",
-                "1-0-1-1.laz",
-                "1-1-0-0.laz",
-                "1-1-0-1.laz",
-                "1-1-1-0.laz",
-                "1-1-1-1.laz",
-            ]
+            # Load hierarchy to get actual available tiles
+            hierarchy = {}
+            hierarchy_key = f"{dataset_name}/ept-hierarchy/0-0-0-0.json"
+            try:
+                response = self.s3_client.get_object(
+                    Bucket=self.bucket_name, Key=hierarchy_key
+                )
+                hierarchy = json.loads(response["Body"].read().decode("utf-8"))
+                logger.info(f"Loaded hierarchy with {len(hierarchy)} tiles")
+            except Exception as e:
+                logger.warning(f"Could not download hierarchy data: {e}")
+                # Fall back to simple tile list if hierarchy not available
+                sample_tiles = ["0-0-0-0.laz"]
+                hierarchy = {"0-0-0-0": 1000}  # Dummy entry
+
+            # Select best tiles from available hierarchy, prioritizing higher levels with good point counts
+            if hierarchy:
+                # Group tiles by level
+                tiles_by_level = {}
+                for tile_name, point_count in hierarchy.items():
+                    parts = tile_name.split("-")
+                    if len(parts) >= 1:
+                        try:
+                            level = int(parts[0])
+                            if level not in tiles_by_level:
+                                tiles_by_level[level] = []
+                            tiles_by_level[level].append((tile_name, point_count))
+                        except ValueError:
+                            continue
+
+                # Select tiles from different levels, prioritizing higher levels for better density
+                sample_tiles = []
+                max_downloads = 50  # Increased from 25
+                total_points = 0
+                max_target_points = 5_000_000  # Increased from 2M to 5M points
+
+                # Always include root tile
+                if "0-0-0-0" in hierarchy:
+                    sample_tiles.append("0-0-0-0.laz")
+
+                # Add tiles from levels 2-6, prioritizing by point count and filtering sparse tiles
+                for level in [
+                    3,
+                    4,
+                    5,
+                    2,
+                    6,
+                ]:  # Reordered to prioritize levels 3-5 first
+                    if level in tiles_by_level and len(sample_tiles) < max_downloads:
+                        # Sort tiles by point count (descending) and take the best ones
+                        level_tiles = sorted(
+                            tiles_by_level[level], key=lambda x: x[1], reverse=True
+                        )
+                        for tile_name, point_count in level_tiles:
+                            if len(sample_tiles) >= max_downloads:
+                                break
+                            if total_points + point_count > max_target_points:
+                                break
+                            # Filter out very sparse tiles (< 1000 points) unless we need more coverage
+                            if point_count < 1000 and len(sample_tiles) > 10:
+                                continue
+                            sample_tiles.append(f"{tile_name}.laz")
+                            total_points += point_count
+
+                logger.info(
+                    f"Selected {len(sample_tiles)} tiles from hierarchy (targeting {total_points:,} points)"
+                )
+            else:
+                # Fallback to basic tiles if hierarchy is not available
+                sample_tiles = ["0-0-0-0.laz"]
 
             downloaded_count = 0
-            max_downloads = 5  # Limit downloads for testing
 
             for tile in sample_tiles:
                 if downloaded_count >= max_downloads:
@@ -548,13 +604,13 @@ class PointCloudDatasetFinder:
                     levels_to_try.append(level)
 
             # Limit to reasonable range (levels 2-6 are usually most useful)
-            levels_to_try = [l for l in levels_to_try if 2 <= l <= 6][
-                :4
-            ]  # Max 4 levels
+            levels_to_try = [l for l in levels_to_try if 2 <= l <= 8][
+                :6
+            ]  # Max 6 levels for better coverage
 
             if not levels_to_try:
                 # Fallback to any available levels
-                levels_to_try = [l for l in available_levels if l >= 2][:3]
+                levels_to_try = [l for l in available_levels if l >= 2][:5]
 
             logger.info(f"Trying tile levels in order: {levels_to_try}")
 
@@ -570,13 +626,38 @@ class PointCloudDatasetFinder:
                 )
                 successful_files.extend(level_files)
 
-                # Check if we have good coverage
-                # For small areas (4-acre orthophotos), even 1-2 tiles might be sufficient
-                if len(successful_files) >= 3:  # Lowered threshold for small areas
-                    logger.info(
-                        f"Got sufficient coverage with {len(successful_files)} tiles"
-                    )
-                    break
+                # Check if we have good coverage based on total points, not just tile count
+                # Calculate current total points from all downloaded files
+                total_downloaded_points = 0
+                for file_path in successful_files:
+                    try:
+                        import laspy
+
+                        las_data = laspy.read(file_path)
+                        total_downloaded_points += len(las_data.points)
+                    except:
+                        pass  # Skip files we can't read
+
+                # Target: at least 500K points for good coverage, but allow up to 5M for dense areas
+                min_target_points = 500_000
+                max_target_points = 5_000_000
+
+                logger.info(
+                    f"Current coverage: {len(successful_files)} tiles, {total_downloaded_points:,} points"
+                )
+
+                # Stop if we have sufficient coverage or too many points
+                if total_downloaded_points >= min_target_points:
+                    if total_downloaded_points >= max_target_points:
+                        logger.info(
+                            f"Reached maximum target points ({max_target_points:,}), stopping"
+                        )
+                        break
+                    elif len(successful_files) >= 10:  # Also stop if we have many tiles
+                        logger.info(
+                            f"Good coverage achieved: {total_downloaded_points:,} points from {len(successful_files)} tiles"
+                        )
+                        break
 
                 # Continue if no tiles found at this level
                 if not level_files:
