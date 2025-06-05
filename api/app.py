@@ -776,25 +776,63 @@ async def download_orthophoto(request: OrthophotoRequest):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error downloading orthophoto for {request.address}: {e}", exc_info=True)
+        logger.error(
+            f"Error downloading orthophoto for {request.address}: {e}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Failed to fetch orthophoto")
 
 
 @app.get("/flood-overhead")
 async def flood_overhead(address: str, bbox_m: float = 64.0):
-    """Return a colored PNG of 100-year flood depth for an address."""
+    """Return a colored PNG visualization of 100-year flood depth for an address.
+
+    This endpoint generates flood depth data by:
+    1. Geocoding the provided address to lat/lon coordinates
+    2. Creating a bounding box of the specified size around the location
+    3. Attempting to fetch real FEMA National Flood Hazard Layer (NFHL) data including:
+       - Flood zones (AE/VE) from FEMA shapefiles
+       - Base Flood Elevation (BFE) lines from FEMA data
+    4. Downloading 1-meter USGS 3DEP DEM tiles for the area
+    5. Rasterizing BFE lines onto the DEM grid
+    6. Calculating flood depths by subtracting DEM from BFE surface
+    7. Clipping results to flood zones (areas outside get nodata)
+    8. Applying a perceptually ordered colormap (viridis) to create PNG
+
+    If FEMA data is unavailable, falls back to synthetic flood modeling.
+
+    Args:
+        address: Street address to analyze (e.g., "1250 Wildwood Road, Boulder, CO")
+        bbox_m: Bounding box size in meters (default 64m ≈ 1 acre square)
+
+    Returns:
+        PNG image (512x512 pixels) showing flood depths with viridis colormap:
+        - Dark blue: Shallow depths
+        - Green: Medium depths
+        - Yellow: Deep depths
+        - Transparent: Areas outside flood zones
+    """
     try:
         from flood_depth import generate
         from overhead_image import render
 
+        # Generate flood depth GeoTIFF
         tiff = generate(address, bbox_m)
+
+        # Convert to colored PNG visualization
         png = render(tiff)
+
         file_path = Path(png)
-        return FileResponse(path=str(file_path), filename=file_path.name, media_type="image/png")
+        return FileResponse(
+            path=str(file_path),
+            filename=f"flood_depth_{address.replace(' ', '_').replace(',', '')}.png",
+            media_type="image/png",
+        )
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error generating flood overhead for {address}: {e}", exc_info=True)
+        logger.error(
+            f"Error generating flood overhead for {address}: {e}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Failed to generate flood image")
 
 
