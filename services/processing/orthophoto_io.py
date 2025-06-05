@@ -115,3 +115,43 @@ class OrthophotoIO:
         except Exception as e:
             logger.warning(f"Could not extract orthophoto bounds: {e}")
             raise
+
+    @staticmethod
+    def validate_orthophoto(file_path: str) -> bool:
+        """
+        Validate orthophoto file dimensions and format.
+
+        Args:
+            file_path: Path to orthophoto file
+
+        Returns:
+            True if valid, False otherwise
+        """
+        try:
+            file_path = Path(file_path)
+
+            if not file_path.exists():
+                logger.warning(f"Orthophoto file does not exist: {file_path}")
+                return False
+
+            with rasterio.open(str(file_path)) as dataset:
+                # Check basic dimensions
+                if dataset.width <= 0 or dataset.height <= 0:
+                    logger.warning(
+                        f"Invalid dimensions: {dataset.width}x{dataset.height}"
+                    )
+                    return False
+
+                # Check that we have some bands
+                if dataset.count <= 0:
+                    logger.warning(f"No bands found in orthophoto")
+                    return False
+
+                logger.info(
+                    f"Orthophoto validation passed: {dataset.width}x{dataset.height}, {dataset.count} bands"
+                )
+                return True
+
+        except Exception as e:
+            logger.error(f"Error validating orthophoto {file_path}: {e}")
+            return False

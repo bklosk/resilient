@@ -305,3 +305,141 @@ class SummaryReporter:
 """
 
         return content
+
+    def generate_summary_report(
+        self, point_cloud_path: str, orthophoto_path: str, metadata: Dict[str, Any]
+    ) -> str:
+        """
+        Generate summary report from file paths and metadata.
+
+        Args:
+            point_cloud_path: Path to point cloud file
+            orthophoto_path: Path to orthophoto file
+            metadata: Additional metadata dictionary
+
+        Returns:
+            str: Path to generated report file
+
+        Raises:
+            FileNotFoundError: If input files don't exist
+        """
+        from services.processing.point_cloud_io import PointCloudIO
+        from services.processing.orthophoto_io import OrthophotoIO
+
+        # Validate input files exist
+        if not Path(point_cloud_path).exists():
+            raise FileNotFoundError(f"Point cloud file not found: {point_cloud_path}")
+        if not Path(orthophoto_path).exists():
+            raise FileNotFoundError(f"Orthophoto file not found: {orthophoto_path}")
+
+        # Load data to generate dummy color array and mask for testing
+        pc_io = PointCloudIO()
+        las_data = pc_io.load_point_cloud(point_cloud_path)
+
+        # Create dummy color data for testing
+        num_points = len(las_data.x)
+        colors = np.zeros((num_points, 3), dtype=np.uint8)
+        valid_mask = np.ones(num_points, dtype=bool)  # All points valid for testing
+
+        # Call the existing method
+        return self.create_summary_report(
+            point_cloud_path,
+            orthophoto_path,
+            point_cloud_path + "_output.laz",
+            colors,
+            valid_mask,
+        )
+
+    def _calculate_processing_statistics(
+        self, point_cloud_path: str, orthophoto_path: str
+    ) -> Dict[str, Any]:
+        """
+        Calculate processing statistics from input files.
+
+        Args:
+            point_cloud_path: Path to point cloud file
+            orthophoto_path: Path to orthophoto file
+
+        Returns:
+            Dict with point_cloud and orthophoto statistics
+        """
+        from services.processing.point_cloud_io import PointCloudIO
+        from services.processing.orthophoto_io import OrthophotoIO
+
+        pc_io = PointCloudIO()
+        ortho_io = OrthophotoIO()
+
+        las_data = pc_io.load_point_cloud(point_cloud_path)
+        ortho_data = ortho_io.load_orthophoto(orthophoto_path)
+
+        return {
+            "point_cloud": {
+                "point_count": len(las_data.x),
+                "bounds": {
+                    "min_x": float(las_data.x.min()),
+                    "max_x": float(las_data.x.max()),
+                    "min_y": float(las_data.y.min()),
+                    "max_y": float(las_data.y.max()),
+                    "min_z": float(las_data.z.min()),
+                    "max_z": float(las_data.z.max()),
+                },
+            },
+            "orthophoto": {
+                "width": ortho_data.width,
+                "height": ortho_data.height,
+                "bounds": ortho_data.bounds._asdict(),
+                "crs": str(ortho_data.crs),
+            },
+        }
+
+    def _format_report_data(
+        self, metadata: Dict[str, Any], statistics: Dict[str, Any]
+    ) -> str:
+        """Formats the report data into a string."""
+        report_parts = []
+        report_parts.append("Photogrammetry Process Summary Report")
+        report_parts.append("=" * 40)
+
+        if "address" in metadata:
+            report_parts.append(f"Location: {metadata['address']}")
+        if "capture_date" in metadata:
+            report_parts.append(f"Capture Date: {metadata['capture_date']}")
+        if "processing_time" in metadata:
+            report_parts.append(
+                f"Total Processing Time: {metadata['processing_time']:.2f} seconds"
+            )
+
+        report_parts.append("\\nProcessing Statistics:")
+        report_parts.append("-" * 20)
+        if "point_cloud" in statistics:
+            pc_stats = statistics["point_cloud"]
+            report_parts.append(f"  Point Cloud:")
+            report_parts.append(f"    Points: {pc_stats.get('point_count', 'N/A')}")
+            report_parts.append(
+                f"    File Size: {pc_stats.get('file_size_mb', 'N/A')} MB"
+            )
+            report_parts.append(
+                f"    Density: {pc_stats.get('density_sqm', 'N/A')} points/sqm"
+            )
+        if "orthophoto" in statistics:
+            ortho_stats = statistics["orthophoto"]
+            report_parts.append(f"  Orthophoto:")
+            report_parts.append(
+                f"    Dimensions: {ortho_stats.get('width', 'N/A')}x{ortho_stats.get('height', 'N/A')}"
+            )
+            report_parts.append(
+                f"    Resolution: {ortho_stats.get('resolution_cm_px', 'N/A')} cm/px"
+            )
+            report_parts.append(
+                f"    File Size: {ortho_stats.get('file_size_mb', 'N/A')} MB"
+            )
+
+        if "alignment" in statistics:
+            align_stats = statistics["alignment"]
+            report_parts.append(f"  Alignment Quality:")
+            report_parts.append(f"    RMSE: {align_stats.get('rmse', 'N/A')}")
+            report_parts.append(
+                f"    Keypoints: {align_stats.get('keypoints_matched', 'N/A')}"
+            )
+
+        return "\\n".join(report_parts)

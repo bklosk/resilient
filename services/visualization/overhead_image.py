@@ -69,3 +69,91 @@ def render(tiff_path: str, output_dir: Optional[str] = None) -> str:
     img = Image.fromarray(scaled, mode="RGBA")
     img.save(out_path, optimize=True)
     return str(out_path)
+
+
+class OverheadImageGenerator:
+    """Generate overhead images from point clouds."""
+
+    def __init__(self):
+        """Initialize the overhead image generator."""
+        pass
+
+    def generate_overhead_view(
+        self, point_cloud_path: str, output_dir: str, colormap: str = "viridis"
+    ) -> str:
+        """
+        Generate overhead view image from point cloud.
+
+        Args:
+            point_cloud_path: Path to point cloud file
+            output_dir: Directory for output image
+            colormap: Matplotlib colormap name
+
+        Returns:
+            str: Path to generated image file
+
+        Raises:
+            FileNotFoundError: If point cloud file doesn't exist
+        """
+        from services.processing.point_cloud_io import PointCloudIO
+        from pathlib import Path
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        # Validate input file exists
+        if not Path(point_cloud_path).exists():
+            raise FileNotFoundError(f"Point cloud file not found: {point_cloud_path}")
+
+        # Load point cloud data
+        pc_io = PointCloudIO()
+        las_data = pc_io.load_point_cloud(point_cloud_path)
+
+        # Extract coordinates
+        x = las_data.x
+        y = las_data.y
+        z = las_data.z
+
+        # Create overhead view plot
+        fig, ax = plt.subplots(figsize=(10, 10))
+        scatter = ax.scatter(x, y, c=z, s=0.1, alpha=0.7, cmap=colormap)
+        ax.set_title("Overhead View")
+        ax.set_xlabel("X")
+        ax.set_ylabel("Y")
+        ax.set_aspect("equal")
+        plt.colorbar(scatter, ax=ax, label="Height (Z)")
+
+        # Save image
+        output_path = Path(output_dir) / "overhead_view.png"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(output_path, dpi=150, bbox_inches="tight")
+        plt.close()
+
+        return str(output_path)
+
+    def _calculate_point_density(self, point_cloud_path: str) -> float:
+        """
+        Calculate point density of the point cloud.
+
+        Args:
+            point_cloud_path: Path to point cloud file
+
+        Returns:
+            float: Point density (points per square meter)
+        """
+        from services.processing.point_cloud_io import PointCloudIO
+
+        pc_io = PointCloudIO()
+        las_data = pc_io.load_point_cloud(point_cloud_path)
+
+        # Calculate bounding box area
+        x_range = las_data.x.max() - las_data.x.min()
+        y_range = las_data.y.max() - las_data.y.min()
+        area = x_range * y_range
+
+        # Calculate density
+        if area > 0:
+            density = len(las_data.x) / area
+        else:
+            density = 0.0
+
+        return density

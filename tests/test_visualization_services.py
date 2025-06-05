@@ -319,9 +319,13 @@ class TestVisualizePointCloud:
 
         visualizer = PointCloudVisualizer()
 
+        # Create a dummy file for the test
+        dummy_file_path = temp_dir / "dummy.laz"
+        dummy_file_path.touch()
+
         with pytest.raises(ValueError, match="Invalid axis"):
             visualizer.create_cross_section_view(
-                "dummy.laz", str(temp_dir), axis="invalid"
+                str(dummy_file_path), str(temp_dir), axis="invalid"
             )
 
     @patch("services.processing.point_cloud_io.PointCloudIO.load_point_cloud")

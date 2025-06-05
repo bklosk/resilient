@@ -28,6 +28,10 @@ logger = logging.getLogger(__name__)
 class CoordinateTransformer:
     """Handles coordinate transformations between different CRS."""
 
+    def __init__(self):
+        """Initialize the coordinate transformer."""
+        pass
+
     @staticmethod
     def detect_point_cloud_crs(las_data: laspy.LasData) -> Optional[str]:
         """Detect point cloud CRS using centralized utilities."""
@@ -131,4 +135,46 @@ class CoordinateTransformer:
 
         except Exception as e:
             logger.error(f"Transformation failed: {e}")
+            raise RuntimeError(f"Coordinate transformation failed: {e}")
+
+    def transform_coordinates(
+        self, x_coords: list, y_coords: list, source_crs: str, target_crs: str
+    ) -> Tuple[list, list]:
+        """
+        Transform coordinates between different CRS.
+
+        Args:
+            x_coords: List of x coordinates
+            y_coords: List of y coordinates
+            source_crs: Source coordinate reference system
+            target_crs: Target coordinate reference system
+
+        Returns:
+            Tuple of (transformed_x, transformed_y) as lists
+        """
+        # If source and target CRS are the same, return original coordinates
+        if source_crs == target_crs:
+            return x_coords.copy() if hasattr(x_coords, "copy") else list(x_coords), (
+                y_coords.copy() if hasattr(y_coords, "copy") else list(y_coords)
+            )
+
+        try:
+            # Create transformer
+            transformer = Transformer.from_crs(source_crs, target_crs, always_xy=True)
+
+            # Transform coordinates
+            new_x, new_y = transformer.transform(x_coords, y_coords)
+
+            # Convert to lists if they're numpy arrays
+            if hasattr(new_x, "tolist"):
+                new_x = new_x.tolist()
+            if hasattr(new_y, "tolist"):
+                new_y = new_y.tolist()
+
+            return new_x, new_y
+
+        except Exception as e:
+            logger.error(
+                f"Failed to transform coordinates from {source_crs} to {target_crs}: {e}"
+            )
             raise RuntimeError(f"Coordinate transformation failed: {e}")

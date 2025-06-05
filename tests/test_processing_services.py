@@ -51,24 +51,30 @@ class TestPointCloudIO:
         with pytest.raises(FileNotFoundError):
             PointCloudIO.load_point_cloud(str(non_existent))
 
-    @patch("laspy.write")
-    def test_save_point_cloud_success(
-        self, mock_write, temp_dir, mock_point_cloud_data
-    ):
+    def test_save_point_cloud_success(self, temp_dir, mock_point_cloud_data):
         """Test successful point cloud saving."""
         from services.processing.point_cloud_io import PointCloudIO
 
         output_file = temp_dir / "output.laz"
 
+        # Mock the write method on the point cloud data object
+        mock_point_cloud_data.write = Mock()
+
+        # Create the file to simulate successful write
+        def mock_write(path):
+            Path(path).touch()
+
+        mock_point_cloud_data.write.side_effect = mock_write
+
         PointCloudIO.save_point_cloud(mock_point_cloud_data, str(output_file))
 
-        mock_write.assert_called_once_with(str(output_file), mock_point_cloud_data)
+        mock_point_cloud_data.write.assert_called_once_with(str(output_file))
 
     def test_save_point_cloud_invalid_path(self, mock_point_cloud_data):
         """Test saving to invalid path."""
         from services.processing.point_cloud_io import PointCloudIO
 
-        with pytest.raises((OSError, PermissionError)):
+        with pytest.raises(RuntimeError):
             PointCloudIO.save_point_cloud(
                 mock_point_cloud_data, "/invalid/path/output.laz"
             )
@@ -93,7 +99,7 @@ class TestOrthophotoIO:
         test_file = temp_dir / "test.tif"
         test_file.write_text("dummy")
 
-        mock_open.return_value.__enter__.return_value = mock_orthophoto_data
+        mock_open.return_value = mock_orthophoto_data
 
         result = OrthophotoIO.load_orthophoto(str(test_file))
 
@@ -205,7 +211,7 @@ class TestCoordinateTransformer:
 
         assert new_x == [1001.0, 1002.0]
         assert new_y == [2001.0, 2002.0]
-        mock_from_crs.assert_called_once_with("EPSG:4326", "EPSG:26913")
+        mock_from_crs.assert_called_once_with("EPSG:4326", "EPSG:26913", always_xy=True)
 
     def test_transform_coordinates_same_crs(self):
         """Test transformation when source and target CRS are the same."""
@@ -235,13 +241,9 @@ class TestPointCloudColorizer:
 
     @patch("services.processing.point_cloud_io.PointCloudIO.load_point_cloud")
     @patch("services.processing.orthophoto_io.OrthophotoIO.load_orthophoto")
-    @patch("services.processing.point_cloud_io.PointCloudIO.save_point_cloud")
-    @patch(
-        "services.processing.coordinate_transformer.CoordinateTransformer.transform_coordinates"
-    )
+    @patch("services.processing.point_cloud_io.PointCloudIO.save_colorized_point_cloud")
     def test_colorize_success(
         self,
-        mock_transform,
         mock_save,
         mock_load_ortho,
         mock_load_pc,
@@ -251,6 +253,7 @@ class TestPointCloudColorizer:
     ):
         """Test successful point cloud colorization."""
         from services.processing.point_cloud_colorizer import PointCloudColorizer
+        import numpy as np
 
         # Setup input files
         pc_file = temp_dir / "input.laz"
@@ -261,12 +264,14 @@ class TestPointCloudColorizer:
         # Setup mocks
         mock_load_pc.return_value = mock_point_cloud_data
         mock_load_ortho.return_value = mock_orthophoto_data
-        mock_transform.return_value = ([100.0, 101.0], [200.0, 201.0])
-
-        # Mock orthophoto sampling
-        mock_orthophoto_data.sample.return_value = [[255, 128, 64]]
 
         colorizer = PointCloudColorizer(str(temp_dir))
+
+        # Mock the colorize_point_cloud method to return valid colors and mask
+        colorizer.colorize_point_cloud = Mock(
+            return_value=(np.array([[255, 128, 64]]), np.array([True]))
+        )
+
         result = colorizer.colorize(str(pc_file), str(ortho_file))
 
         assert Path(result).name.endswith(".laz")

@@ -231,6 +231,69 @@ class SpatialIndexBuilder:
         print(f"Created geographic grid with {len(grid_index)} cells")
         return spatial_index
 
+    def build_index(self, point_cloud_path: str, output_dir: str) -> str:
+        """
+        Build a spatial index from a local point cloud file.
+
+        Args:
+            point_cloud_path: Path to the point cloud file
+            output_dir: Directory to save the spatial index
+
+        Returns:
+            str: Path to the generated spatial index file
+
+        Raises:
+            FileNotFoundError: If point cloud file doesn't exist
+        """
+        from services.processing.point_cloud_io import PointCloudIO
+        from pathlib import Path
+        import json
+        import time
+
+        # Validate input file exists
+        if not Path(point_cloud_path).exists():
+            raise FileNotFoundError(f"Point cloud file not found: {point_cloud_path}")
+
+        # Load point cloud data
+        pc_io = PointCloudIO()
+        las_data = pc_io.load_point_cloud(point_cloud_path)
+
+        # Extract spatial information
+        x_coords = las_data.x
+        y_coords = las_data.y
+        z_coords = las_data.z
+
+        min_x, max_x = float(x_coords.min()), float(x_coords.max())
+        min_y, max_y = float(y_coords.min()), float(y_coords.max())
+        min_z, max_z = float(z_coords.min()), float(z_coords.max())
+
+        # Create spatial index data structure
+        spatial_index = {
+            "datasets": [
+                {
+                    "name": Path(point_cloud_path).stem,
+                    "path": point_cloud_path,
+                    "bounds": [min_x, min_y, min_z, max_x, max_y, max_z],
+                    "points": len(x_coords),
+                    "created_at": time.time(),
+                }
+            ],
+            "total_datasets": 1,
+            "created_at": time.time(),
+            "version": "1.0",
+        }
+
+        # Save spatial index
+        output_path = Path(output_dir) / "spatial_index.json"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(output_path, "w") as f:
+            json.dump(spatial_index, f, indent=2)
+
+        return str(output_path)
+
+    # ...existing code...
+
 
 def load_existing_index(filepath: str) -> Optional[Dict]:
     """Load existing spatial index if it exists."""

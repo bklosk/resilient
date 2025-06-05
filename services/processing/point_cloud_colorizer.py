@@ -642,3 +642,45 @@ class PointCloudColorizer:
         logger.info(
             f"DEBUG - Non-zero color counts: R={non_zero_red}, G={non_zero_green}, B={non_zero_blue}"
         )
+
+    def colorize(
+        self, point_cloud_path: str, orthophoto_path: str, output_path: str = None
+    ) -> str:
+        """
+        Colorize a point cloud using an orthophoto.
+
+        Args:
+            point_cloud_path: Path to input point cloud file
+            orthophoto_path: Path to orthophoto file
+            output_path: Optional output path (auto-generated if not provided)
+
+        Returns:
+            Path to colorized point cloud file
+        """
+        from .point_cloud_io import PointCloudIO
+        from .orthophoto_io import OrthophotoIO
+
+        logger.info(f"Colorizing point cloud: {point_cloud_path}")
+        logger.info(f"Using orthophoto: {orthophoto_path}")
+
+        # Load input files
+        las_data = PointCloudIO.load_point_cloud(point_cloud_path)
+        ortho_dataset = OrthophotoIO.load_orthophoto(orthophoto_path)
+
+        # Perform colorization
+        colors, valid_mask = self.colorize_point_cloud(las_data, ortho_dataset)
+
+        # Generate output path if not provided
+        if output_path is None:
+            input_name = Path(point_cloud_path).stem
+            output_path = self.output_dir / f"{input_name}_colorized.laz"
+        else:
+            output_path = Path(output_path)
+
+        # Save colorized point cloud
+        PointCloudIO.save_colorized_point_cloud(
+            las_data, colors, valid_mask, str(output_path)
+        )
+
+        logger.info(f"Colorized point cloud saved to: {output_path}")
+        return str(output_path)

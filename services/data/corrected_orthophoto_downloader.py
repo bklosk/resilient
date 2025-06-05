@@ -25,7 +25,7 @@ class CorrectedOrthophotoDownloader:
         Args:
             output_dir: Directory for downloaded files
         """
-        self.output_dir = output_dir
+        self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True)
 
     def download_corrected_orthophoto(

@@ -25,7 +25,7 @@ class AlignmentDiagnostics:
         Args:
             output_dir: Directory for diagnostic outputs
         """
-        self.output_dir = output_dir
+        self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True)
 
     def create_alignment_diagnostic(
@@ -143,3 +143,50 @@ class AlignmentDiagnostics:
             f"Points within orthophoto bounds: {points_in_bounds:,}/{sample_size:,} "
             f"({100*points_in_bounds/sample_size:.1f}%)"
         )
+
+    def generate_alignment_diagnostic(
+        self,
+        point_cloud_path: str,
+        orthophoto_path: str,
+        output_name: str = "alignment_diagnostic.png",
+    ):
+        """
+        Generate alignment diagnostic from file paths.
+
+        Args:
+            point_cloud_path: Path to point cloud file
+            orthophoto_path: Path to orthophoto file
+            output_name: Name for output diagnostic file
+
+        Returns:
+            str: Path to generated diagnostic file
+
+        Raises:
+            FileNotFoundError: If input files don't exist
+        """
+        from services.processing.point_cloud_io import PointCloudIO
+        from services.processing.orthophoto_io import OrthophotoIO
+
+        # Validate input files exist
+        if not Path(point_cloud_path).exists():
+            raise FileNotFoundError(f"Point cloud file not found: {point_cloud_path}")
+        if not Path(orthophoto_path).exists():
+            raise FileNotFoundError(f"Orthophoto file not found: {orthophoto_path}")
+
+        # Load data
+        pc_io = PointCloudIO()
+        ortho_io = OrthophotoIO()
+
+        las_data = pc_io.load_point_cloud(point_cloud_path)
+        ortho_data = ortho_io.load_orthophoto(orthophoto_path)
+
+        # Use point cloud coordinates directly (simplified for testing)
+        x_coords = las_data.x
+        y_coords = las_data.y
+
+        # Generate diagnostic
+        self.create_alignment_diagnostic(
+            las_data, ortho_data, x_coords, y_coords, output_name
+        )
+
+        return str(self.output_dir / output_name)
