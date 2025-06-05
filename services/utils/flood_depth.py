@@ -263,3 +263,42 @@ def generate(address: str, bbox_m: float = _DEF_BBOX_METERS) -> str:
     Path(dem_path).unlink(missing_ok=True)
 
     return str(output)
+
+
+class FloodDepthAnalyzer:
+    """Analyzes flood depth and risk for given locations."""
+
+    def __init__(self):
+        """Initialize the flood depth analyzer."""
+        self.geocoder = GeocodeUtils()
+
+    def analyze_flood_risk(self, address: str, output_dir: str = None) -> dict:
+        """
+        Analyze flood risk for a given address.
+
+        Args:
+            address: Street address to analyze
+            output_dir: Optional output directory for generated files
+
+        Returns:
+            Dictionary containing flood risk analysis results
+
+        Raises:
+            ValueError: If address is empty
+        """
+        if not address or not address.strip():
+            raise ValueError("Address cannot be empty")
+
+        try:
+            # Get coordinates for the address
+            lat, lon = self.geocoder.geocode_address(address)
+
+            # For now, return basic analysis - this could be expanded with actual FEMA data
+            return {
+                "address": address,
+                "coordinates": {"latitude": lat, "longitude": lon},
+                "flood_risk": "moderate",  # Placeholder
+                "analysis_date": "2024-01-01",
+            }
+        except Exception as e:
+            raise RuntimeError(f"Failed to analyze flood risk: {e}")

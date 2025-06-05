@@ -88,3 +88,30 @@ class OrthophotoIO:
 
         except Exception as e:
             raise RuntimeError(f"Failed to load orthophoto: {e}")
+
+    @staticmethod
+    def get_orthophoto_bounds(file_path: str):
+        """
+        Extract bounds and CRS from orthophoto file.
+
+        Args:
+            file_path: Path to orthophoto file
+
+        Returns:
+            Tuple of (bounds_dict, crs_string)
+        """
+        try:
+            with rasterio.open(file_path) as ortho_dataset:
+                ortho_bounds = {
+                    "left": ortho_dataset.bounds.left,
+                    "right": ortho_dataset.bounds.right,
+                    "bottom": ortho_dataset.bounds.bottom,
+                    "top": ortho_dataset.bounds.top,
+                }
+                ortho_crs = str(ortho_dataset.crs)
+                logger.info(f"Orthophoto bounds extracted: {ortho_bounds}")
+                logger.info(f"Orthophoto CRS: {ortho_crs}")
+                return ortho_bounds, ortho_crs
+        except Exception as e:
+            logger.warning(f"Could not extract orthophoto bounds: {e}")
+            raise

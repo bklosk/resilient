@@ -164,3 +164,37 @@ class PointCloudIO:
         logger.info(
             f"Trimmed from {total_points_count:,} to {valid_points_count:,} points"
         )
+
+    @staticmethod
+    def save_point_cloud(las_data: laspy.LasData, output_path: str):
+        """
+        Save point cloud data to file.
+
+        Args:
+            las_data: Point cloud data to save
+            output_path: Output file path
+
+        Raises:
+            RuntimeError: If save operation fails
+        """
+        try:
+            output_path = Path(output_path)
+            logger.info(f"Saving point cloud to: {output_path}")
+
+            # Ensure output directory exists
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Write the point cloud
+            las_data.write(str(output_path))
+
+            # Verify file was created
+            if not output_path.exists():
+                raise RuntimeError(f"File was not created: {output_path}")
+
+            logger.info(
+                f"Successfully saved {len(las_data.points):,} points to {output_path}"
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to save point cloud to {output_path}: {e}")
+            raise RuntimeError(f"Failed to save point cloud: {e}")

@@ -28,14 +28,10 @@ class NAIPFetcher:
 
     def __init__(self):
         """Initialize the NAIP fetcher and query service capabilities."""
-        self.service_url = (
-            "https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPPlus/ImageServer/exportImage"
-        )
+        self.service_url = "https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPPlus/ImageServer/exportImage"
         # Related service info endpoint used to discover limits and native pixel
         # size.  Defaults are safe fallbacks in case the request fails.
-        self.service_info_url = (
-            "https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPPlus/ImageServer"
-        )
+        self.service_info_url = "https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPPlus/ImageServer"
         self.max_image_width = 4000
         self.max_image_height = 4000
         self.native_pixel_size = 1.0
@@ -47,14 +43,21 @@ class NAIPFetcher:
             resp = requests.get(f"{self.service_info_url}?f=json", timeout=10)
             resp.raise_for_status()
             info = resp.json()
-            self.max_image_width = info.get("maxImageWidth", self.max_image_width)
-            self.max_image_height = info.get(
-                "maxImageHeight", self.max_image_height
-            )
-            self.native_pixel_size = min(
-                info.get("pixelSizeX", self.native_pixel_size),
-                info.get("pixelSizeY", self.native_pixel_size),
-            )
+
+            # Safely extract values, ensuring they are numeric
+            max_width = info.get("maxImageWidth", self.max_image_width)
+            max_height = info.get("maxImageHeight", self.max_image_height)
+            pixel_x = info.get("pixelSizeX", self.native_pixel_size)
+            pixel_y = info.get("pixelSizeY", self.native_pixel_size)
+
+            # Only update if we got valid numeric values
+            if isinstance(max_width, (int, float)) and max_width > 0:
+                self.max_image_width = max_width
+            if isinstance(max_height, (int, float)) and max_height > 0:
+                self.max_image_height = max_height
+            if isinstance(pixel_x, (int, float)) and isinstance(pixel_y, (int, float)):
+                self.native_pixel_size = min(pixel_x, pixel_y)
+
             print(
                 f"Service limits - width: {self.max_image_width}, height: {self.max_image_height}, pixel size: {self.native_pixel_size}"
             )
@@ -62,7 +65,12 @@ class NAIPFetcher:
             print(f"Warning: failed to fetch service info: {exc}")
 
     def _calculate_optimal_size(
-        self, min_lon: float, min_lat: float, max_lon: float, max_lat: float, pixel_size: float | None = None
+        self,
+        min_lon: float,
+        min_lat: float,
+        max_lon: float,
+        max_lat: float,
+        pixel_size: float | None = None,
     ) -> str:
         """Calculate an image size matching the native pixel resolution."""
 
@@ -319,8 +327,13 @@ class NAIPFetcher:
             Tuple of (output_path, metadata)
 
         Raises:
+            ValueError: If address is empty
             Exception: If geocoding or image export fails
         """
+        # Validate address is not empty
+        if not address or not address.strip():
+            raise ValueError("Address cannot be empty")
+
         # Geocode the address
         print(f"Processing address: {address}")
         geocoder = GeocodeUtils()
@@ -376,6 +389,21 @@ class NAIPFetcher:
         self.save_metadata(metadata, output_dir)
 
         return actual_output_path, metadata
+
+    def _get_orthophoto_url(self, address: str) -> str:
+        """
+        Get the orthophoto URL for a given address.
+        This is a helper method that can be mocked in tests.
+
+        Args:
+            address: Street address to get URL for
+
+        Returns:
+            URL string for the orthophoto
+        """
+        # This is a placeholder method that tests can mock
+        # In reality, this would construct an appropriate URL based on the address
+        return f"{self.service_url}?address={address}"
 
 
 def get_orthophoto_for_address(

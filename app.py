@@ -813,8 +813,8 @@ async def flood_overhead(address: str, bbox_m: float = 64.0):
         - Transparent: Areas outside flood zones
     """
     try:
-        from flood_depth import generate
-        from overhead_image import render
+        from services.utils.flood_depth import generate
+        from services.visualization.overhead_image import render
 
         # Generate flood depth GeoTIFF
         tiff = generate(address, bbox_m)

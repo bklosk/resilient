@@ -50,9 +50,9 @@ from ..visualization.summary_reporter import SummaryReporter
 
 # External dependencies
 try:
-    from geocode import Geocoder
-    from get_point_cloud import PointCloudDatasetFinder
-    from get_orthophoto import NAIPFetcher
+    from services.core.geocode import Geocoder
+    from services.data.get_point_cloud import PointCloudDatasetFinder
+    from services.data.get_orthophoto import NAIPFetcher
 
     EXTERNAL_DEPS_AVAILABLE = True
 except ImportError as e:

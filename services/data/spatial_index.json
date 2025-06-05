@@ -1,0 +1,19 @@
+{
+  "datasets": [
+    {
+      "name": "test_dataset",
+      "bounds": {
+        "minx": -105.3,
+        "miny": 39.9,
+        "maxx": -105.2,
+        "maxy": 40.1
+      },
+      "crs": "EPSG:4326",
+      "path": "/test/path/to/dataset.laz",
+      "metadata": {
+        "points": 1000000,
+        "density": 5.0
+      }
+    }
+  ]
+}

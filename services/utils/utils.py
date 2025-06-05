@@ -106,8 +106,16 @@ class CRSUtils:
         if header is not None:
             epsg = getattr(header, "epsg", None)
             if epsg:
-                logger.info(f"CRS detected from LAS header: EPSG:{epsg}")
-                return f"EPSG:{epsg}"
+                try:
+                    # Validate EPSG code using pyproj
+                    from pyproj import CRS
+
+                    crs = CRS.from_epsg(epsg)
+                    epsg_string = crs.to_string()
+                    logger.info(f"CRS detected from LAS header: {epsg_string}")
+                    return epsg_string
+                except Exception as e:
+                    logger.warning(f"Invalid EPSG code {epsg}: {e}")
 
             if hasattr(header, "parse_crs"):
                 try:
@@ -235,7 +243,16 @@ class BoundingBoxUtils:
 
         Returns:
             Comma-separated bounding box string: "min_lon,min_lat,max_lon,max_lat"
+
+        Raises:
+            ValueError: If coordinates are out of valid range
         """
+        # Validate coordinates
+        if not (-90 <= lat <= 90):
+            raise ValueError(f"Invalid latitude: {lat}. Must be between -90 and 90.")
+        if not (-180 <= lon <= 180):
+            raise ValueError(f"Invalid longitude: {lon}. Must be between -180 and 180.")
+
         # Convert buffer from km to degrees (rough approximation)
         buffer_deg = buffer_km / 111.0  # 1 degree ≈ 111 km
 
@@ -283,7 +300,6 @@ class BoundingBoxUtils:
 class FileUtils:
     """File handling utilities."""
 
-
     @staticmethod
     def get_safe_filename(address: str) -> str:
         """Generate a safe filename from an address string.
@@ -300,8 +316,6 @@ class FileUtils:
         safe_name = re.sub(r"[^\w\s-]", "", address).strip()
         safe_name = re.sub(r"[-\s]+", "_", safe_name)
         return safe_name.lower()
-
-
 
 
 try:

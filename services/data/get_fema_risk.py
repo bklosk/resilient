@@ -72,6 +72,10 @@ class FEMADataFetcher:
     def process_address(
         self, address: str, output_dir: str = "../data"
     ) -> Tuple[str, Dict]:
+        # Validate address is not empty
+        if not address or not address.strip():
+            raise ValueError("Address cannot be empty")
+
         lat, lon = self.geocoder.geocode_address(address)
         flood_map = self.fetch_flood_map(lat, lon, output_dir)
         risk = self.fetch_risk_data(lat, lon)
