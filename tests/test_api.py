@@ -23,12 +23,12 @@ def client(tmp_path, monkeypatch):
         def __init__(self, output_dir=".", create_diagnostics=False):
             self.output_dir = output_dir
 
-        def process_from_address(self, address):
-            output = Path(tmp_path) / "dummy.laz"
-            output.write_text("data")
-            return str(output)
+    def process_from_address(self, address):
+        output = Path(tmp_path) / "dummy.laz"
+        output.write_text("data")
+        return str(output)
 
-    stub_process.PointCloudColorizer = DummyColorizer
+    stub_process.PointCloudProcessor = DummyColorizer
 
     stub_geocode = types.ModuleType("geocode")
 
@@ -63,6 +63,11 @@ def client(tmp_path, monkeypatch):
     stub_orth.NAIPFetcher = DummyFetcher
 
     for name, module in [
+        ("services.core.process_point_cloud", stub_process),
+        ("services.core.geocode", stub_geocode),
+        ("services.data.get_point_cloud", stub_pc),
+        ("services.data.get_orthophoto", stub_orth),
+        # Also stub the old import paths for backward compatibility
         ("process_point_cloud", stub_process),
         ("geocode", stub_geocode),
         ("get_point_cloud", stub_pc),
@@ -70,10 +75,10 @@ def client(tmp_path, monkeypatch):
     ]:
         sys.modules[name] = module
 
-    if "api.app" in sys.modules:
-        app_module = sys.modules["api.app"]
+    if "app" in sys.modules:
+        app_module = sys.modules["app"]
     else:
-        app_module = importlib.import_module("api.app")
+        app_module = importlib.import_module("app")
     app_module.jobs.clear()
 
     def immediate_background(job_id, address, buffer_km):

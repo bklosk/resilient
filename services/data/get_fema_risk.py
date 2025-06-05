@@ -12,16 +12,14 @@ from typing import Tuple, Dict
 
 import requests
 
-from get_orthophoto import NAIPFetcher
-from utils import GeocodeUtils
+from .get_orthophoto import NAIPFetcher
+from ..utils.utils import GeocodeUtils
 
 
 class FEMADataFetcher:
     """Retrieve FEMA flood map image and National Risk Index data."""
 
-    FLOOD_SERVICE_URL = (
-        "https://msc.fema.gov/arcgis/rest/services/NFHL/DFIRM_Flood_Hazard/MapServer/export"
-    )
+    FLOOD_SERVICE_URL = "https://msc.fema.gov/arcgis/rest/services/NFHL/DFIRM_Flood_Hazard/MapServer/export"
     NRI_SERVICE_URL = (
         "https://hazards.fema.gov/gis/nrimap/rest/services/NRI/MapServer/0/query"
     )
@@ -30,7 +28,9 @@ class FEMADataFetcher:
         self.naip = NAIPFetcher()
         self.geocoder = GeocodeUtils()
 
-    def _bbox_string(self, lat: float, lon: float) -> Tuple[str, Tuple[float, float, float, float]]:
+    def _bbox_string(
+        self, lat: float, lon: float
+    ) -> Tuple[str, Tuple[float, float, float, float]]:
         min_lon, min_lat, max_lon, max_lat = self.naip.calculate_acre_bbox(lat, lon)
         bbox = f"{min_lon},{min_lat},{max_lon},{max_lat}"
         return bbox, (min_lon, min_lat, max_lon, max_lat)
@@ -69,7 +69,9 @@ class FEMADataFetcher:
             return data["features"][0].get("attributes", {})
         return {}
 
-    def process_address(self, address: str, output_dir: str = "../data") -> Tuple[str, Dict]:
+    def process_address(
+        self, address: str, output_dir: str = "../data"
+    ) -> Tuple[str, Dict]:
         lat, lon = self.geocoder.geocode_address(address)
         flood_map = self.fetch_flood_map(lat, lon, output_dir)
         risk = self.fetch_risk_data(lat, lon)

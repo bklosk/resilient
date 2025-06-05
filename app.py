@@ -22,9 +22,9 @@ from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field, validator
 from uvicorn.logging import DefaultFormatter
 
-# Add the scripts directory to the Python path so we can import the modules
-scripts_dir = Path(__file__).parent.parent / "scripts"
-sys.path.insert(0, str(scripts_dir))
+# Add the services directory to the Python path so we can import the modules
+services_dir = Path(__file__).parent / "services"
+sys.path.insert(0, str(services_dir))
 
 # Configure logging with uvicorn-style colors first (before any logging usage)
 handler = logging.StreamHandler(sys.stdout)
@@ -44,10 +44,11 @@ logger.propagate = False
 
 # Import our helper modules
 try:
-    from process_point_cloud import PointCloudColorizer
-    from geocode import Geocoder
-    from get_point_cloud import PointCloudDatasetFinder
-    from get_orthophoto import NAIPFetcher
+    # Use the new modular processor instead of the old monolithic one
+    from services.core.process_point_cloud import PointCloudProcessor
+    from services.core.geocode import Geocoder
+    from services.data.get_point_cloud import PointCloudDatasetFinder
+    from services.data.get_orthophoto import NAIPFetcher
 except ImportError as e:
     logger.error(f"Error importing required modules: {e}")
     logger.error(
@@ -217,8 +218,8 @@ async def root():
 async def health_check():
     """Health check endpoint with dependency verification."""
     try:
-        # Test imports
-        from process_point_cloud import PointCloudColorizer
+        # Test imports - use new modular processor
+        from process_point_cloud import PointCloudProcessor
         from geocode import Geocoder
 
         return {
@@ -433,17 +434,17 @@ def process_point_cloud_background(job_id: str, address: str, buffer_km: float):
                 },
             )
 
-            # Initialize colorizer and process with detailed error handling
+            # Initialize processor and process with detailed error handling
             try:
-                colorizer = PointCloudColorizer(output_dir=str(temp_dir))
-                logger.info(f"Initialized PointCloudColorizer for job {job_id}")
+                processor = PointCloudProcessor(output_dir=str(temp_dir))
+                logger.info(f"Initialized PointCloudProcessor for job {job_id}")
 
                 update_job_status(
                     job_id,
                     metadata={"processing_step": "starting_point_cloud_processing"},
                 )
 
-                output_path = colorizer.process_from_address(address)
+                output_path = processor.process_from_address(address)
 
                 if not output_path:
                     raise ValueError("Point cloud processing returned no output path")
@@ -730,7 +731,7 @@ async def download_file(job_id: str):
             )
 
         # Security check - ensure file is within expected directory
-        expected_dir = Path(__file__).parent.parent / "data" / "outputs"
+        expected_dir = Path(__file__).parent / "data" / "outputs"
         try:
             file_path.resolve().relative_to(expected_dir.resolve())
         except ValueError:
@@ -852,7 +853,7 @@ async def startup_event():
     logger.info("Photogrammetry API starting up...")
 
     # Create necessary directories
-    data_dir = Path(__file__).parent.parent / "data"
+    data_dir = Path(__file__).parent / "data"
     output_dir = data_dir / "outputs"
     output_dir.mkdir(parents=True, exist_ok=True)
     ortho_dir = data_dir / "orthophotos"

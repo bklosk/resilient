@@ -1,12 +1,10 @@
 /data/boulder_flyover
-/scripts/__pycache__
 .DS_Store
 /models/*
 /output_sam_masks/*
 /sam2/*
 /checkpoints/*
 /data/*
-/scripts/data
-api/__pycache__
+services/__pycache__
 output.txt
 *.pyc

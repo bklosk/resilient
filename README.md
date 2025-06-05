@@ -28,7 +28,7 @@ For example, we could:
 1.  **Data Acquisition & Preprocessing:**
     *   Collect LiDAR scans 📡 and orthophotos 🖼️.
     *   Align and fuse these datasets.
-    *   Colorize the LiDAR point cloud using orthophoto imagery (implemented in `scripts/process_point_cloud.py`).
+    *   Colorize the LiDAR point cloud using orthophoto imagery (implemented in `services/core/process_point_cloud.py`).
 2.  **3D Semantic Segmentation:**
     *   Train or use a pre-trained model to classify points in the cloud (e.g., using Open3D-ML) 🧠.
 3.  **Candidate Identification & Analysis:**
@@ -76,7 +76,7 @@ For example, we could:
 
 ### Running the Pipeline 🚀
 
-The main entry point is `scripts/process_point_cloud.py`. This script colorizes LiDAR point clouds using orthophotos and can either download data for an address or process existing files.
+The main entry point is now the FastAPI application in `app.py`. This provides both a web API and command-line interface for processing LiDAR point clouds with orthophotos.
 
 To run the pipeline:
 
@@ -84,18 +84,18 @@ To run the pipeline:
     ```bash
     source venv/bin/activate
     ```
-2.  **Navigate to the `scripts` directory (optional, but paths in the script are relative to its location):**
+2.  **Start the FastAPI application:**
     ```bash
-    cd scripts
+    python app.py
     ```
-3.  **Execute the script:**
+    Or run it directly with uvicorn:
     ```bash
-    python process_point_cloud.py --address "1250 Wildwood Road, Boulder, CO"
+    uvicorn app:app --reload
     ```
-    If you are in the root directory of the project, you can run it as:
-    ```bash
-    python scripts/process_point_cloud.py --address "1250 Wildwood Road, Boulder, CO"
-    ```
+3.  **Use the API endpoints or web interface to process data:**
+    - Web interface: http://localhost:8000
+    - API documentation: http://localhost:8000/docs
+    - Example API call: POST to `/process` with address parameter
 
 The script will process the data and print status messages to the console. Upon completion, it will save the colorized point cloud to a predefined location (e.g., `data/colorized_point_cloud.laz`). No separate visualization window will be opened by this script.
 

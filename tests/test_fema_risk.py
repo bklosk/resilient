@@ -7,7 +7,7 @@ import pytest
 
 @pytest.fixture
 def fetcher(monkeypatch):
-    from scripts.get_fema_risk import FEMADataFetcher
+    from services.data.get_fema_risk import FEMADataFetcher
 
     fetcher = FEMADataFetcher()
 
@@ -26,8 +26,10 @@ def fetcher(monkeypatch):
     class DummyResp:
         def __init__(self, content):
             self.content = content
+
         def raise_for_status(self):
             pass
+
         def json(self):
             return json.loads(self.content.decode())
 

@@ -19,7 +19,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional
 
-from utils import S3Utils, JSONUtils
+from ..utils.utils import S3Utils, JSONUtils
 
 
 class SpatialIndexBuilder:
