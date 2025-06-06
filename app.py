@@ -806,7 +806,7 @@ async def flood_overhead(address: str, bbox_m: float = 64.0):
         bbox_m: Bounding box size in meters (default 64m ≈ 1 acre square)
 
     Returns:
-        PNG image (512x512 pixels) showing flood depths with viridis colormap:
+        PNG image (1024x1024 pixels) showing flood depths with viridis colormap:
         - Dark blue: Shallow depths
         - Green: Medium depths
         - Yellow: Deep depths
