@@ -35,9 +35,8 @@ class TestDataFetcher:
         assert new_dir.exists()
 
     @patch(
-        "services.data.get_point_cloud.PointCloudDatasetFinder.search_lidar_products"
+        "services.data.get_point_cloud.PointCloudDatasetFinder.find_datasets_for_location"
     )
-    @patch("services.data.get_point_cloud.PointCloudDatasetFinder.filter_laz_products")
     @patch(
         "services.data.get_point_cloud.PointCloudDatasetFinder.select_best_dataset_for_location"
     )
@@ -46,8 +45,7 @@ class TestDataFetcher:
         self,
         mock_download,
         mock_select,
-        mock_filter,
-        mock_search,
+        mock_find_datasets,
         temp_dir,
         sample_bbox,
         mock_geocoding_result,
@@ -56,13 +54,11 @@ class TestDataFetcher:
         from services.data.data_fetcher import DataFetcher
 
         # Setup mocks
-        products = [{"name": "test_product", "title": "Test Product"}]
-        laz_products = [{"name": "test_laz", "title": "Test LAZ"}]
-        best_product = {"name": "best_laz", "title": "Best LAZ"}
+        datasets = [{"name": "test_dataset", "title": "Test Dataset"}]
+        best_dataset = {"name": "best_dataset", "title": "Best Dataset"}
 
-        mock_search.return_value = products
-        mock_filter.return_value = laz_products
-        mock_select.return_value = best_product
+        mock_find_datasets.return_value = datasets
+        mock_select.return_value = best_dataset
         mock_download.return_value = str(temp_dir / "test.laz")
 
         # Create dummy file
@@ -70,9 +66,7 @@ class TestDataFetcher:
 
         # Create mock fetcher
         mock_pc_fetcher = Mock()
-        mock_pc_fetcher.generate_bounding_box.return_value = sample_bbox
-        mock_pc_fetcher.search_lidar_products = mock_search
-        mock_pc_fetcher.filter_laz_products = mock_filter
+        mock_pc_fetcher.find_datasets_for_location = mock_find_datasets
         mock_pc_fetcher.select_best_dataset_for_location = mock_select
         mock_pc_fetcher.download_point_cloud = mock_download
 
@@ -82,38 +76,20 @@ class TestDataFetcher:
         )
 
         assert result == str(temp_dir / "test.laz")
-        mock_search.assert_called_once()
-        mock_filter.assert_called_once()
+        mock_find_datasets.assert_called_once_with(mock_geocoding_result[0], mock_geocoding_result[1])
         mock_select.assert_called_once()
         mock_download.assert_called_once()
 
     def test_fetch_point_cloud_data_no_products(self, temp_dir, mock_geocoding_result):
-        """Test point cloud fetch when no products found."""
+        """Test point cloud fetch when no datasets found."""
         from services.data.data_fetcher import DataFetcher
 
         mock_pc_fetcher = Mock()
-        mock_pc_fetcher.search_lidar_products.return_value = []
+        mock_pc_fetcher.find_datasets_for_location.return_value = []
 
         fetcher = DataFetcher(str(temp_dir))
 
         with pytest.raises(RuntimeError, match="No LiDAR data found"):
-            fetcher.fetch_point_cloud_data(
-                mock_pc_fetcher, mock_geocoding_result[0], mock_geocoding_result[1]
-            )
-
-    def test_fetch_point_cloud_data_no_laz_products(
-        self, temp_dir, mock_geocoding_result
-    ):
-        """Test point cloud fetch when no LAZ products found."""
-        from services.data.data_fetcher import DataFetcher
-
-        mock_pc_fetcher = Mock()
-        mock_pc_fetcher.search_lidar_products.return_value = [{"format": "TIF"}]
-        mock_pc_fetcher.filter_laz_products.return_value = []
-
-        fetcher = DataFetcher(str(temp_dir))
-
-        with pytest.raises(RuntimeError, match="No LAZ format LiDAR data found"):
             fetcher.fetch_point_cloud_data(
                 mock_pc_fetcher, mock_geocoding_result[0], mock_geocoding_result[1]
             )
@@ -210,28 +186,43 @@ class TestPointCloudDatasetFinder:
         with pytest.raises(ValueError):
             finder.generate_bounding_box(40.0, 181.0, buffer_km=1.0)  # Invalid lon
 
-    @patch("requests.get")
-    def test_search_lidar_products_success(self, mock_get, sample_bbox):
-        """Test successful LiDAR product search."""
+    def test_find_datasets_for_location_success(self, mock_geocoding_result):
+        """Test successful dataset search using spatial index."""
         from services.data.get_point_cloud import PointCloudDatasetFinder
+        from pyproj import Transformer
 
-        # Mock successful API response
-        mock_response = Mock()
-        mock_response.json.return_value = {
-            "results": [
-                {"title": "Product 1", "format": "LAZ"},
-                {"title": "Product 2", "format": "TIF"},
+        # Transform test coordinates to Web Mercator (same as what the class does internally)
+        transformer = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
+        test_x, test_y = transformer.transform(mock_geocoding_result[1], mock_geocoding_result[0])
+        
+        # Create bounds that will contain the transformed coordinates (with buffer)
+        buffer = 50000  # 50km buffer in Web Mercator
+        bounds_containing = [test_x - buffer, test_y - buffer, test_x + buffer, test_y + buffer]
+        bounds_not_containing = [test_x + buffer*2, test_y + buffer*2, test_x + buffer*3, test_y + buffer*3]
+
+        # Mock the spatial index with test data
+        with patch.object(PointCloudDatasetFinder, '_load_spatial_index') as mock_load:
+            mock_load.return_value = [
+                {
+                    "name": "test_dataset_1",
+                    "bounds": bounds_containing,  # Contains test point
+                    "points": 1000000
+                },
+                {
+                    "name": "test_dataset_2", 
+                    "bounds": bounds_not_containing,  # Does not contain test point
+                    "points": 500000
+                }
             ]
-        }
-        mock_response.raise_for_status.return_value = None
-        mock_get.return_value = mock_response
+            
+            finder = PointCloudDatasetFinder()
+            datasets = finder.find_datasets_for_location(
+                mock_geocoding_result[0], mock_geocoding_result[1]
+            )
 
-        finder = PointCloudDatasetFinder()
-        products = finder.search_lidar_products(sample_bbox)
-
-        assert len(products) == 2
-        assert products[0]["title"] == "Product 1"
-        mock_get.assert_called_once()
+            # Should find the dataset that contains the test coordinates
+            assert len(datasets) >= 1
+            assert any("test_dataset_1" in d["name"] for d in datasets)
 
     def test_filter_laz_products(self):
         """Test filtering for LAZ format products."""

@@ -50,13 +50,9 @@ class DataFetcher:
         logger.info("Fetching point cloud data...")
 
         try:
-            # Generate bounding box for point cloud search
-            bbox = pc_fetcher.generate_bounding_box(lat, lon, buffer_km=1.0)
-            logger.info(f"Search area: {bbox}")
-
-            # Search for point cloud data
+            # Search for point cloud data using spatial index
             logger.info("Searching for LiDAR data...")
-            products = pc_fetcher.search_lidar_products(bbox)
+            products = pc_fetcher.find_datasets_for_location(lat, lon)
 
             if not products:
                 logger.error(
@@ -68,26 +64,18 @@ class DataFetcher:
 
             logger.info(f"Found {len(products)} LiDAR products")
 
-            laz_products = pc_fetcher.filter_laz_products(products)
-
-            if not laz_products:
-                logger.error("No LAZ format LiDAR data found")
-                raise RuntimeError(
-                    "No LAZ format LiDAR data found. Only LAZ files are supported for processing."
-                )
-
-            logger.info(f"Found {len(laz_products)} LAZ products")
+            logger.info(f"Found {len(products)} LiDAR datasets")
 
             # Select the best dataset using improved selection logic
             logger.info("Selecting best dataset based on location and recency...")
             if ortho_bounds and ortho_crs:
                 logger.info("Using orthophoto-aware dataset selection...")
                 best_product = pc_fetcher.select_best_dataset_for_orthophoto(
-                    laz_products, ortho_bounds, ortho_crs, lat, lon
+                    products, ortho_bounds, ortho_crs, lat, lon
                 )
             else:
                 best_product = pc_fetcher.select_best_dataset_for_location(
-                    laz_products, lat, lon
+                    products, lat, lon
                 )
 
             logger.info(f"Selected dataset: {best_product.get('name', 'Unknown')}")

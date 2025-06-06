@@ -374,9 +374,9 @@ def process_point_cloud_background(job_id: str, address: str, buffer_km: float):
 
             logger.info(f"Generated valid bounding box: {bbox}")
 
-            products = pc_fetcher.search_lidar_products(bbox)
+            datasets = pc_fetcher.find_datasets_for_location(lat, lon)
 
-            if not products:
+            if not datasets:
                 error_msg = f"No LiDAR data found for location: {address} (lat: {lat:.6f}, lon: {lon:.6f})"
                 logger.error(error_msg)
                 update_job_status(
@@ -387,24 +387,12 @@ def process_point_cloud_background(job_id: str, address: str, buffer_km: float):
                 )
                 return
 
-            laz_products = pc_fetcher.filter_laz_products(products)
-            if not laz_products:
-                error_msg = f"No LAZ format LiDAR data found for location: {address}"
-                logger.error(error_msg)
-                update_job_status(
-                    job_id,
-                    status=JobStatus.FAILED,
-                    error_message=error_msg,
-                    completed_at=datetime.now(),
-                )
-                return
-
-            logger.info(f"Found {len(laz_products)} LAZ products for processing")
+            logger.info(f"Found {len(datasets)} LiDAR datasets for processing")
 
             update_job_status(
                 job_id,
                 metadata={
-                    "lidar_products_found": len(laz_products),
+                    "lidar_datasets_found": len(datasets),
                     "processing_step": "lidar_data_found",
                     "bbox": bbox,
                 },

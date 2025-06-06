@@ -120,7 +120,7 @@ class PointCloudColorizer:
 
         # Create diagnostic plot if requested or if there's coordinate issues
         if self.create_diagnostics or not (overlap_x and overlap_y):
-            from alignment_diagnostics import AlignmentDiagnostics
+            from services.processing.alignment_diagnostics import AlignmentDiagnostics
 
             diagnostics = AlignmentDiagnostics(self.output_dir)
             diagnostics.create_alignment_diagnostic(
@@ -584,10 +584,11 @@ class PointCloudColorizer:
 
         if "uint8" in dtype_str:
             # Scale from 0-255 to 0-65535 using vectorized multiplication
+            # Convert to uint16 first to prevent overflow during multiplication
             scale_factor = 257  # 65535 / 255
-            colors[valid_mask, 0] = (red_values * scale_factor).astype(np.uint16)
-            colors[valid_mask, 1] = (green_values * scale_factor).astype(np.uint16)
-            colors[valid_mask, 2] = (blue_values * scale_factor).astype(np.uint16)
+            colors[valid_mask, 0] = (red_values.astype(np.uint16) * scale_factor).astype(np.uint16)
+            colors[valid_mask, 1] = (green_values.astype(np.uint16) * scale_factor).astype(np.uint16)
+            colors[valid_mask, 2] = (blue_values.astype(np.uint16) * scale_factor).astype(np.uint16)
             logger.info(f"DEBUG - Applied uint8 scaling (factor: {scale_factor})")
 
         elif "uint16" in dtype_str:

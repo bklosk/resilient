@@ -19,7 +19,7 @@ import requests
 import geopandas as gpd
 import fiona
 
-from utils import GeocodeUtils
+from .utils import GeocodeUtils
 
 
 _DEF_BBOX_METERS = 63.6  # ~1 acre square

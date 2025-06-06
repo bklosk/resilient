@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 class PointCloudDatasetFinder:
     def __init__(self, spatial_index_path: str = None):
         # Use centralized utilities
-        from utils import GeocodeUtils, BoundingBoxUtils, S3Utils, JSONUtils
+        from utils.utils import GeocodeUtils, BoundingBoxUtils, S3Utils, JSONUtils
 
         self.geocode_utils = GeocodeUtils()
         self.bbox_utils = BoundingBoxUtils()
@@ -45,7 +45,7 @@ class PointCloudDatasetFinder:
         if spatial_index_path is None:
             script_dir = os.path.dirname(os.path.abspath(__file__))
             self.spatial_index_path = os.path.join(
-                os.path.dirname(script_dir), "data", "spatial_index.json"
+                os.path.dirname(os.path.dirname(script_dir)), "data", "spatial_index.json"
             )
         else:
             self.spatial_index_path = spatial_index_path
@@ -1292,42 +1292,6 @@ class PointCloudDatasetFinder:
     ) -> str:
         """Generate a bounding box around coordinates for LiDAR search using centralized utils."""
         return self.bbox_utils.generate_bounding_box(lat, lon, buffer_km)
-
-    def search_lidar_products(self, bbox: str) -> List[Dict]:
-        """Search for LiDAR products within a bounding box using external API.
-
-        Args:
-            bbox: Bounding box string "min_lon,min_lat,max_lon,max_lat"
-
-        Returns:
-            List of matching datasets
-        """
-        try:
-            bbox_parts = bbox.split(",")
-            if len(bbox_parts) != 4:
-                raise ValueError(f"Invalid bounding box format: {bbox}")
-
-            min_lon, min_lat, max_lon, max_lat = map(float, bbox_parts)
-            logger.info(f"Searching for LiDAR products in bbox: {bbox}")
-
-            # Make API call to search for products (this is what the test expects)
-            api_url = "https://cloud.sdsc.edu/v1/nsa/search"  # Example API URL
-            params = {"bbox": bbox, "format": "json"}
-
-            import requests
-
-            response = requests.get(api_url, params=params, timeout=30)
-            response.raise_for_status()
-
-            data = response.json()
-            products = data.get("results", [])
-
-            logger.info(f"Found {len(products)} LiDAR products")
-            return products
-
-        except Exception as e:
-            logger.error(f"Error searching LiDAR products: {e}")
-            return []
 
     def filter_laz_products(self, products: List[Dict]) -> List[Dict]:
         """Filter products to only include LAZ format data.
