@@ -23,6 +23,7 @@ from .utils import GeocodeUtils
 
 
 _DEF_BBOX_METERS = 63.6  # ~1 acre square
+DEM_TILE_SIZE = 1024  # pixel dimensions for DEM tiles
 
 # FEMA OpenFEMA S3 endpoints
 OPENFEMA_BASE_URL = "https://opendata.arcgis.com/api/v3/datasets"
@@ -102,7 +103,7 @@ def _download_fema_bfe(
 
 
 def _download_dem(
-    min_lon: float, min_lat: float, max_lon: float, max_lat: float, size: int = 512
+    min_lon: float, min_lat: float, max_lon: float, max_lat: float, size: int = DEM_TILE_SIZE
 ) -> str:
     """Download a DEM tile from the USGS 3DEP service."""
     url = "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/exportImage"
@@ -137,7 +138,7 @@ def generate(address: str, bbox_m: float = _DEF_BBOX_METERS) -> str:
     min_lon, min_lat, max_lon, max_lat = _acre_bbox(lat, lon, bbox_m)
 
     # Download DEM data
-    dem_path = _download_dem(min_lon, min_lat, max_lon, max_lat)
+    dem_path = _download_dem(min_lon, min_lat, max_lon, max_lat, size=DEM_TILE_SIZE)
 
     with rasterio.open(dem_path) as dem_src:
         dem = dem_src.read(1)
