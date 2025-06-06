@@ -57,7 +57,6 @@ from get_orthophoto import NAIPFetcher
 from utils import CRSUtils, BoundingBoxUtils, FileUtils
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 # Suppress warnings for cleaner output

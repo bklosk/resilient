@@ -26,16 +26,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("point_cloud_processing.log"),
-    ],
-)
-
+# Configure logging - use simple logger setup to avoid conflicts with main app
 logger = logging.getLogger(__name__)
 
 # Import our modular components

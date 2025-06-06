@@ -859,5 +859,13 @@ async def shutdown_event():
 if __name__ == "__main__":
     import uvicorn
 
-    # Run the server
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True, log_level="info")
+    # Run the server with reload only watching specific directories
+    # This prevents infinite reload loops caused by log files, cache files, and output files
+    uvicorn.run(
+        "app:app", 
+        host="0.0.0.0", 
+        port=8000, 
+        reload=True, 
+        log_level="info",
+        reload_dirs=["./services"]  # Only watch services directory for changes
+    )
