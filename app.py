@@ -49,6 +49,7 @@ try:
     from services.core.geocode import Geocoder
     from services.data.get_point_cloud import PointCloudDatasetFinder
     from services.data.get_orthophoto import NAIPFetcher
+    from services.ai.openai_analysis import OpenAIAnalyzer
 except ImportError as e:
     logger.error(f"Error importing required modules: {e}")
     logger.error(
@@ -192,6 +193,49 @@ class OrthophotoRequest(BaseModel):
         if not v or not v.strip():
             raise ValueError("Address cannot be empty")
         return v.strip()
+
+
+class FloodAnalysisRequest(BaseModel):
+    """Request model for OpenAI flood analysis."""
+
+    address: str = Field(
+        ...,
+        description="Street address to analyze",
+        example="1250 Wildwood Road, Boulder, CO",
+        min_length=5,
+        max_length=200,
+    )
+    bbox_m: float = Field(
+        default=64.0,
+        description="Bounding box size in meters for imagery",
+        ge=32.0,
+        le=500.0,
+    )
+    custom_prompt: Optional[str] = Field(
+        default=None,
+        description="Custom analysis prompt for OpenAI. If not provided, uses default comprehensive flood analysis prompt.",
+        max_length=2000,
+    )
+
+    @validator("address")
+    def validate_address(cls, v):
+        if not v or not v.strip():
+            raise ValueError("Address cannot be empty")
+        return v.strip()
+
+
+class FloodAnalysisResponse(BaseModel):
+    """Response model for OpenAI flood analysis."""
+
+    success: bool
+    message: str
+    analysis: Optional[str] = None
+    model: Optional[str] = None
+    tokens_used: Optional[int] = None
+    timestamp: datetime
+    flood_image_path: Optional[str] = None
+    satellite_image_path: Optional[str] = None
+    error: Optional[str] = None
 
 
 class JobStatusResponse(BaseModel):
@@ -830,6 +874,128 @@ async def flood_overhead(address: str, bbox_m: float = 64.0, resolution: int = 8
             f"Error generating flood overhead for {address}: {e}", exc_info=True
         )
         raise HTTPException(status_code=500, detail="Failed to generate flood image")
+
+
+@app.post("/analyze-flood", response_model=FloodAnalysisResponse)
+async def analyze_flood_with_openai(request: FloodAnalysisRequest):
+    """Analyze flood damage using OpenAI by comparing flood overhead and satellite images.
+    
+    This endpoint:
+    1. Generates a flood overhead image for the specified address using existing flood-overhead functionality
+    2. Fetches a satellite image (NAIP orthophoto) for the same bounding box
+    3. Sends both images to OpenAI GPT-4 Vision for comprehensive flood damage analysis
+    4. Returns the AI analysis along with metadata about the process
+    
+    Args:
+        request: FloodAnalysisRequest containing address, bounding box size, and optional custom prompt
+        
+    Returns:
+        FloodAnalysisResponse with AI analysis, success status, and metadata
+    """
+    try:
+        logger.info(f"Starting flood analysis for address: {request.address}")
+        
+        # Create temporary directory for image storage
+        temp_dir = Path(tempfile.mkdtemp(prefix="flood_analysis_"))
+        
+        try:
+            # Step 1: Generate flood overhead image
+            logger.info("Generating flood overhead image...")
+            from services.utils.flood_depth import generate
+            from services.visualization.overhead_image import render
+            
+            # Generate flood depth GeoTIFF
+            flood_tiff = generate(request.address, request.bbox_m)
+            
+            # Convert to colored PNG visualization (high resolution for better AI analysis)
+            flood_png = render(flood_tiff, target_size=2048)
+            
+            # Copy flood image to temp directory with consistent naming
+            flood_image_path = temp_dir / "flood_overhead.png"
+            shutil.copy2(flood_png, flood_image_path)
+            logger.info(f"Flood overhead image saved to: {flood_image_path}")
+            
+            # Step 2: Get satellite image using NAIP fetcher
+            logger.info("Fetching satellite image...")
+            geocoder = Geocoder()
+            lat, lon = geocoder.geocode_address(request.address)
+            
+            # Calculate bounding box for satellite image (same as flood image)
+            # Convert meters to degrees (rough approximation)
+            meter_to_deg = request.bbox_m / 111000  # 1 degree ≈ 111km
+            bbox = [
+                lon - meter_to_deg / 2,  # min_x (west)
+                lat - meter_to_deg / 2,  # min_y (south)  
+                lon + meter_to_deg / 2,  # max_x (east)
+                lat + meter_to_deg / 2   # max_y (north)
+            ]
+            
+            # Fetch NAIP satellite image
+            naip_fetcher = NAIPFetcher()
+            satellite_output_path = str(temp_dir / "satellite_image.tif")
+            satellite_metadata = naip_fetcher.export_image(
+                min_lon=bbox[0],
+                min_lat=bbox[1], 
+                max_lon=bbox[2],
+                max_lat=bbox[3],
+                output_path=satellite_output_path
+            )
+            satellite_image_path = satellite_output_path
+            
+            if not satellite_image_path or not Path(satellite_image_path).exists():
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to fetch satellite image for the specified location"
+                )
+            
+            logger.info(f"Satellite image saved to: {satellite_image_path}")
+            
+            # Step 3: Analyze both images with OpenAI
+            logger.info("Sending images to OpenAI for analysis...")
+            analyzer = OpenAIAnalyzer()
+            
+            # Use custom prompt if provided, otherwise use default
+            analysis_result = analyzer.analyze_flood_images(
+                flood_image_path=str(flood_image_path),
+                satellite_image_path=str(satellite_image_path),
+                prompt=request.custom_prompt
+            )
+            
+            if not analysis_result["success"]:
+                return FloodAnalysisResponse(
+                    success=False,
+                    message="OpenAI analysis failed",
+                    error=analysis_result.get("error", "Unknown error during AI analysis"),
+                    timestamp=datetime.now(),
+                    flood_image_path=str(flood_image_path),
+                    satellite_image_path=str(satellite_image_path)
+                )
+            
+            logger.info("OpenAI analysis completed successfully")
+            
+            return FloodAnalysisResponse(
+                success=True,
+                message="Flood analysis completed successfully",
+                analysis=analysis_result["analysis"],
+                model=analysis_result.get("model", "gpt-4-vision-preview"),
+                tokens_used=analysis_result.get("tokens_used"),
+                timestamp=datetime.now(),
+                flood_image_path=str(flood_image_path),
+                satellite_image_path=str(satellite_image_path)
+            )
+            
+        finally:
+            # Clean up temporary directory
+            cleanup_temp_dir(temp_dir)
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in flood analysis for {request.address}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to complete flood analysis: {str(e)}"
+        )
 
 
 def cleanup_temp_dir(temp_dir: Path):
