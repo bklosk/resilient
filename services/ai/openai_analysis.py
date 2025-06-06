@@ -308,4 +308,5 @@ class OpenAIAnalyzer:
 1. The first image shows a flood depth visualization with colored areas representing different flood depths (darker blue = shallow water, yellow/green = deeper water)
 2. The second image shows a satellite/aerial view of the same area with actual terrain and development
 
-The images are a 100 year flood depth map, and an overhead satellite image of a property in Boulder, CO. Suggest specific, detailed, surgical interventions that could reduce 100 year flood risk to this property. Estimate the cost of each intervention, and consider regulatory barriers (like HOA requirements or FEMA flood defense suggestions)."""
+First, roughly estimate the depth damage to the property and replacement cost from a 100 year flood.
+Then, the images are a 100 year flood depth map, and an overhead satellite image of a property in Boulder, CO. Suggest specific, detailed, surgical interventions that could reduce 100 year flood risk to this property. Estimate the cost of each intervention, and consider regulatory barriers (like HOA requirements or FEMA flood defense suggestions)."""
