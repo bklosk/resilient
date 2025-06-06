@@ -218,9 +218,9 @@ Range: {z.max() - z.min():.1f}
 
     plt.tight_layout()
 
-    # Save the visualization
+    # Save the visualization with higher DPI for better resolution
     output_path = output_dir / f"point_cloud_visualization.png"
-    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")  # Increased from 150 to 300 DPI
     plt.close()
 
     logger.info(f"Visualization saved: {output_path}")

@@ -154,7 +154,8 @@ class TestOverheadImage:
         result = generator.generate_overhead_view(str(pc_file), str(temp_dir))
 
         assert Path(result).suffix == ".png"
-        mock_load_pc.assert_called_once()
+        # Point cloud is loaded twice: once for density calculation, once for visualization
+        assert mock_load_pc.call_count == 2
         mock_savefig.assert_called_once()
 
     def test_generate_overhead_view_file_not_found(self, temp_dir):

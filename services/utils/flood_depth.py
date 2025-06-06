@@ -23,7 +23,7 @@ from .utils import GeocodeUtils
 
 
 _DEF_BBOX_METERS = 63.6  # ~1 acre square
-DEM_TILE_SIZE = 1024  # pixel dimensions for DEM tiles
+DEM_TILE_SIZE = 2048  # pixel dimensions for DEM tiles (increased for higher resolution)
 
 # FEMA OpenFEMA S3 endpoints
 OPENFEMA_BASE_URL = "https://opendata.arcgis.com/api/v3/datasets"

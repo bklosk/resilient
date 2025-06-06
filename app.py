@@ -772,7 +772,7 @@ async def download_orthophoto(request: OrthophotoRequest):
 
 
 @app.get("/flood-overhead")
-async def flood_overhead(address: str, bbox_m: float = 64.0):
+async def flood_overhead(address: str, bbox_m: float = 64.0, resolution: int = 8192):
     """Return a colored PNG visualization of 100-year flood depth for an address.
 
     This endpoint generates flood depth data by:
@@ -792,15 +792,22 @@ async def flood_overhead(address: str, bbox_m: float = 64.0):
     Args:
         address: Street address to analyze (e.g., "1250 Wildwood Road, Boulder, CO")
         bbox_m: Bounding box size in meters (default 64m ≈ 1 acre square)
+        resolution: Output image resolution in pixels (default 8192x8192 for ultra-high quality)
 
     Returns:
-        PNG image (1024x1024 pixels) showing flood depths with viridis colormap:
+        PNG image (8192x8192 pixels by default, upscaled with bicubic interpolation) showing flood depths with viridis colormap:
         - Dark blue: Shallow depths
         - Green: Medium depths
         - Yellow: Deep depths
         - Transparent: Areas outside flood zones
     """
     try:
+        # Validate resolution parameter
+        if resolution < 512:
+            raise HTTPException(status_code=400, detail="Resolution must be at least 512 pixels")
+        if resolution > 16384:
+            raise HTTPException(status_code=400, detail="Resolution cannot exceed 16384 pixels (memory constraints)")
+        
         from services.utils.flood_depth import generate
         from services.visualization.overhead_image import render
 
@@ -808,7 +815,7 @@ async def flood_overhead(address: str, bbox_m: float = 64.0):
         tiff = generate(address, bbox_m)
 
         # Convert to colored PNG visualization
-        png = render(tiff)
+        png = render(tiff, target_size=resolution)
 
         file_path = Path(png)
         return FileResponse(
