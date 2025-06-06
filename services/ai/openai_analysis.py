@@ -137,16 +137,15 @@ class OpenAIAnalyzer:
     def analyze_flood_images(
         self, 
         flood_image_path: str, 
-        satellite_image_path: str,
-        prompt: Optional[str] = None
+        satellite_image_path: str
     ) -> Dict[str, Any]:
         """
-        Analyze flood overhead and satellite images using OpenAI GPT-4o Vision.
+        Analyze flood overhead and satellite images using OpenAI GPT-4.1 Vision.
+        Always uses the predefined flood analysis prompt.
         
         Args:
             flood_image_path: Path to flood depth visualization image
             satellite_image_path: Path to satellite/aerial image  
-            prompt: Custom analysis prompt. If None, uses comprehensive default prompt.
             
         Returns:
             Dictionary containing:
@@ -163,9 +162,8 @@ class OpenAIAnalyzer:
             flood_b64 = self._convert_and_encode_image(flood_image_path)
             satellite_b64 = self._convert_and_encode_image(satellite_image_path)
             
-            # Use default comprehensive prompt if none provided
-            if not prompt:
-                prompt = self._get_default_flood_analysis_prompt()
+            # Always use the predefined flood analysis prompt
+            prompt = self._get_default_flood_analysis_prompt()
             
             # Prepare messages for OpenAI API
             messages = [
@@ -195,9 +193,9 @@ class OpenAIAnalyzer:
             ]
             
             # Make API call
-            logger.info("Sending request to OpenAI GPT-4o Vision API...")
+            logger.info("Sending request to OpenAI GPT-4.1 Vision API...")
             response = self.client.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-4.1",
                 messages=messages,
                 max_tokens=4000,
                 temperature=0.1
@@ -211,7 +209,7 @@ class OpenAIAnalyzer:
             return {
                 "success": True,
                 "analysis": analysis_text,
-                "model": "gpt-4o",
+                "model": "gpt-4.1",
                 "tokens_used": tokens_used
             }
             
@@ -229,7 +227,7 @@ class OpenAIAnalyzer:
         prompt: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Analyze a single image using OpenAI GPT-4o Vision.
+        Analyze a single image using OpenAI GPT-4.1 Vision.
         
         Args:
             image_path: Path to image file
@@ -270,7 +268,7 @@ class OpenAIAnalyzer:
             
             # Make API call
             response = self.client.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-4.1",
                 messages=messages,
                 max_tokens=2000,
                 temperature=0.1
@@ -284,7 +282,7 @@ class OpenAIAnalyzer:
             return {
                 "success": True,
                 "analysis": analysis_text,
-                "model": "gpt-4o", 
+                "model": "gpt-4.1", 
                 "tokens_used": tokens_used
             }
             
@@ -303,10 +301,10 @@ class OpenAIAnalyzer:
         Returns:
             Detailed prompt for flood damage analysis
         """
-        return """Please analyze these two images for flood damage assessment:
+        return """Please analyze these two images for flood damage mitigation opportunities:
 
 1. The first image shows a flood depth visualization with colored areas representing different flood depths (darker blue = shallow water, yellow/green = deeper water)
 2. The second image shows a satellite/aerial view of the same area with actual terrain and development
 
 First, roughly estimate the depth damage to the property and replacement cost from a 100 year flood.
-Then, the images are a 100 year flood depth map, and an overhead satellite image of a property in Boulder, CO. Suggest specific, detailed, surgical interventions that could reduce 100 year flood risk to this property. Estimate the cost of each intervention, and consider regulatory barriers (like HOA requirements or FEMA flood defense suggestions)."""
+Then, the images are a 100 year flood depth map, and an overhead satellite image of a property in Boulder, CO. Suggest specific, detailed, surgical interventions that could reduce 100 year flood risk to this property. Estimate the cost of each intervention, and consider regulatory barriers (like HOA requirements or FEMA flood defense suggestions). Rank the interventions with the cheapest approaches first, and estimate the corresponding loss in risk. Do not use markdown formatting."""

@@ -211,11 +211,6 @@ class FloodAnalysisRequest(BaseModel):
         ge=32.0,
         le=500.0,
     )
-    custom_prompt: Optional[str] = Field(
-        default=None,
-        description="Custom analysis prompt for OpenAI. If not provided, uses default comprehensive flood analysis prompt.",
-        max_length=2000,
-    )
 
     @validator("address")
     def validate_address(cls, v):
@@ -954,11 +949,10 @@ async def analyze_flood_with_openai(request: FloodAnalysisRequest):
             logger.info("Sending images to OpenAI for analysis...")
             analyzer = OpenAIAnalyzer()
             
-            # Use custom prompt if provided, otherwise use default
+            # Always use the default prompt - no custom prompts allowed
             analysis_result = analyzer.analyze_flood_images(
                 flood_image_path=str(flood_image_path),
-                satellite_image_path=str(satellite_image_path),
-                prompt=request.custom_prompt
+                satellite_image_path=str(satellite_image_path)
             )
             
             if not analysis_result["success"]:
