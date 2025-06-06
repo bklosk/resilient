@@ -473,7 +473,7 @@ def process_point_cloud_background(job_id: str, address: str, buffer_km: float):
                 raise ValueError("Point cloud processing produced empty file")
 
             # Step 5: Move to permanent location with validation
-            output_dir = Path(__file__).parent.parent / "data" / "outputs"
+            output_dir = Path(__file__).parent / "data" / "outputs"
             output_dir.mkdir(parents=True, exist_ok=True)
 
             output_filename = f"colorized_{job_id}.laz"
