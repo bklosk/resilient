@@ -1,11 +1,59 @@
+# Data directories
 /data/boulder_flyover
-.DS_Store
+/data/outputs/
+/data/orthophotos/
 /models/*
 /output_sam_masks/*
 /sam2/*
 /checkpoints/*
-/data/*
-services/__pycache__
-output.txt
+
+# Python cache and bytecode
+__pycache__/
+*.py[cod]
 *.pyc
+*.pyo
+*.pyd
+.Python
+
+# Logs
 *.log
+logs/*.log
+
+# Temporary files
+output.txt
+*.tmp
+*.temp
+*~
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
