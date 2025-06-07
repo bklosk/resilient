@@ -97,26 +97,44 @@ def client(tmp_path, monkeypatch):
         app_module = sys.modules["app"]
     else:
         app_module = importlib.import_module("app")
-    app_module.jobs.clear()
+    
+    # Import shared module for job management
+    from routers.shared import jobs, update_job_status, JobStatus
+    jobs.clear()
 
     def immediate_background(job_id, address, buffer_km):
         output_dir = REPO_ROOT / "data" / "outputs"
         output_dir.mkdir(parents=True, exist_ok=True)
         output_file = output_dir / f"{job_id}.laz"
         output_file.write_text("content")
-        app_module.update_job_status(
+        update_job_status(
             job_id,
-            status=app_module.JobStatus.COMPLETED,
+            status=JobStatus.COMPLETED,
             output_file=str(output_file),
             completed_at=datetime.now(),
         )
 
+    # Import jobs router to patch the background function
+    from routers import jobs as jobs_router
     monkeypatch.setattr(
-        app_module, "process_point_cloud_background", immediate_background
+        jobs_router, "process_point_cloud_background", immediate_background
     )
 
+    # Create a mock app_module object for backwards compatibility with tests
+    class MockAppModule:
+        def __init__(self, app):
+            self.app = app
+            self.JobStatus = JobStatus
+            self.jobs = jobs
+            self.update_job_status = update_job_status
+            # Add reference to the background function in jobs router
+            from routers.jobs import process_point_cloud_background
+            self.process_point_cloud_background = process_point_cloud_background
+
+    mock_app_module = MockAppModule(app_module.app)
+
     with TestClient(app_module.app) as client:
-        yield client, app_module
+        yield client, mock_app_module
 
     # Cleanup: restore original modules
     sys.modules.clear()
@@ -371,8 +389,9 @@ def test_error_handling_in_processing(client):
     """Test error handling during background processing."""
     client, app_module = client
 
-    # Mock processing to fail
-    original_process = app_module.process_point_cloud_background
+    # Import the jobs router to patch the background function directly
+    from routers import jobs as jobs_router
+    original_process = jobs_router.process_point_cloud_background
 
     def failing_process(job_id, address, buffer_km):
         app_module.update_job_status(
@@ -382,7 +401,8 @@ def test_error_handling_in_processing(client):
             completed_at=datetime.now(),
         )
 
-    app_module.process_point_cloud_background = failing_process
+    # Patch the function directly in the jobs router
+    jobs_router.process_point_cloud_background = failing_process
 
     try:
         resp = client.post("/process", json={"address": "Failing Address"})
@@ -402,7 +422,7 @@ def test_error_handling_in_processing(client):
 
     finally:
         # Restore original function
-        app_module.process_point_cloud_background = original_process
+        jobs_router.process_point_cloud_background = original_process
 
 
 def test_job_metadata_tracking(client):
