@@ -198,7 +198,8 @@ class OpenAIAnalyzer:
                 model="gpt-4.1",
                 messages=messages,
                 max_tokens=4000,
-                temperature=0.1
+                temperature=0.1,
+                response_format={"type": "json_object"}
             )
             
             analysis_text = response.choices[0].message.content
@@ -271,7 +272,8 @@ class OpenAIAnalyzer:
                 model="gpt-4.1",
                 messages=messages,
                 max_tokens=2000,
-                temperature=0.1
+                temperature=0.1,
+                response_format={"type": "json_object"}
             )
             
             analysis_text = response.choices[0].message.content
@@ -306,5 +308,4 @@ class OpenAIAnalyzer:
 1. The first image shows a flood depth visualization with colored areas representing different flood depths (darker blue = shallow water, yellow/green = deeper water)
 2. The second image shows a satellite/aerial view of the same area with actual terrain and development
 
-First, roughly estimate the depth damage to the property and replacement cost from a 100 year flood.
-Then, the images are a 100 year flood depth map, and an overhead satellite image of a property in Boulder, CO. Suggest specific, detailed, surgical interventions that could reduce 100 year flood risk to this property. Estimate the cost of each intervention, and consider regulatory barriers (like HOA requirements or FEMA flood defense suggestions). Rank the interventions with the cheapest approaches first, and estimate the corresponding loss in risk. Do not use markdown formatting."""
+The images are a 100 year flood depth map, and an overhead satellite image of a property. Suggest specific, detailed, surgical interventions that could reduce 100 year flood risk to this property. The interventions should be specific to the property; for instance, if suggesting a berm or earthen levee, specify the placement on the property. Estimate the cost of each intervention, and consider regulatory barriers (like HOA requirements or FEMA flood defense suggestions). Estimate the corresponding loss in risk for each measure. For each measure provide: intervention_name, placement_description, capital_cost_low_usd, capital_cost_high_usd, annual_maintenance_usd, risk_reduction_pct, regulatory_notes. Capital cost ranges should rely on 2024 contractor pricing; note HOA constraints if visible. Sort the list by capital_cost_low_usd ascending. Flag any assumption you are unsure about with the prefix UNCERTAIN:. Write in plain sentences, and return your response as a valid JSON object."""
