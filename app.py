@@ -10,6 +10,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from uvicorn.logging import DefaultFormatter
+from contextlib import asynccontextmanager
 
 # Configure logging with uvicorn-style colors first (before any logging usage)
 handler = logging.StreamHandler()
@@ -77,10 +78,9 @@ app.include_router(jobs_router, tags=["jobs"])
 app.include_router(images_router, tags=["images"])
 app.include_router(analysis_router, tags=["analysis"])
 
-
-@app.on_event("startup")
-async def startup_event():
-    """Startup event handler."""
+@asynccontextmanager
+async def lifespan(app : FastAPI):
+    """Startup Events & Shutdown Events. Shutdown events occur after this event is yield'd."""
     logger.info("Photogrammetry API starting up...")
 
     # Create necessary directories
@@ -92,10 +92,8 @@ async def startup_event():
 
     logger.info("Photogrammetry API startup complete")
 
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Shutdown event handler."""
+    yield
+    """Shutdown Events."""
     logger.info("Photogrammetry API shutting down...")
 
 
