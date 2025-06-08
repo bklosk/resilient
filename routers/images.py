@@ -60,6 +60,7 @@ async def flood_overhead(address: str, bbox_m: float = 64.0, resolution: int = 8
     6. Calculating flood depths by subtracting DEM from BFE surface
     7. Clipping results to flood zones (areas outside get nodata)
     8. Applying a perceptually ordered colormap (viridis) to create PNG
+    9. Inverting the colors of the PNG
 
     If FEMA data is unavailable, falls back to synthetic flood modeling.
 
@@ -69,10 +70,10 @@ async def flood_overhead(address: str, bbox_m: float = 64.0, resolution: int = 8
         resolution: Output image resolution in pixels (default 8192x8192 for ultra-high quality)
 
     Returns:
-        PNG image (8192x8192 pixels by default, upscaled with bicubic interpolation) showing flood depths with viridis colormap:
-        - Dark blue: Shallow depths
+        PNG image (8192x8192 pixels by default, upscaled with bicubic interpolation) showing flood depths with an inverted viridis colormap:
+        - Yellow: Shallow depths
         - Green: Medium depths
-        - Yellow: Deep depths
+        - Dark blue: Deep depths
         - Transparent: Areas outside flood zones
     """
     try:
@@ -84,6 +85,7 @@ async def flood_overhead(address: str, bbox_m: float = 64.0, resolution: int = 8
         
         from services.utils.flood_depth import generate
         from services.visualization.overhead_image import render
+        from services.visualization.invert_image import invert_image_colors
 
         # Generate flood depth GeoTIFF
         tiff = generate(address, bbox_m)
@@ -91,7 +93,10 @@ async def flood_overhead(address: str, bbox_m: float = 64.0, resolution: int = 8
         # Convert to colored PNG visualization
         png = render(tiff, target_size=resolution)
 
-        file_path = Path(png)
+        # Invert the colors of the PNG
+        inverted_png = invert_image_colors(png)
+
+        file_path = Path(inverted_png)
         return FileResponse(
             path=str(file_path),
             filename=f"flood_depth_{address.replace(' ', '_').replace(',', '')}.png",
