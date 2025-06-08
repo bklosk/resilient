@@ -6,6 +6,7 @@ import tempfile
 import json
 import zipfile
 import io
+import datetime
 from pathlib import Path
 from typing import Tuple, List, Optional
 
@@ -299,7 +300,7 @@ class FloodDepthAnalyzer:
                 "address": address,
                 "coordinates": {"latitude": lat, "longitude": lon},
                 "flood_risk": "moderate",  # Placeholder
-                "analysis_date": "2024-01-01",
+                "analysis_date": datetime.datetime.now().strftime("%Y-%m-%d"),
             }
         except Exception as e:
             raise RuntimeError(f"Failed to analyze flood risk: {e}")
