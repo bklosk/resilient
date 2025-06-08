@@ -39,10 +39,29 @@ from routers.jobs import router as jobs_router
 from routers.images import router as images_router
 from routers.analysis import router as analysis_router
 
+@asynccontextmanager
+async def lifespan(app : FastAPI):
+    """Startup Events & Shutdown Events. Shutdown events occur after this event is yield'd."""
+    logger.info("Photogrammetry API starting up...")
+
+    # Create necessary directories
+    data_dir = Path(__file__).parent / "data"
+    output_dir = data_dir / "outputs"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    ortho_dir = data_dir / "orthophotos"
+    ortho_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info("Photogrammetry API startup complete")
+
+    yield
+    """Shutdown Events."""
+    logger.info("Photogrammetry API shutting down...")
+
 app = FastAPI(
     title="Photogrammetry Point Cloud API",
     description="API for generating colorized point clouds from address inputs",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # Configure CORS
@@ -77,25 +96,6 @@ app.include_router(health_router, tags=["health"])
 app.include_router(jobs_router, tags=["jobs"])
 app.include_router(images_router, tags=["images"])
 app.include_router(analysis_router, tags=["analysis"])
-
-@asynccontextmanager
-async def lifespan(app : FastAPI):
-    """Startup Events & Shutdown Events. Shutdown events occur after this event is yield'd."""
-    logger.info("Photogrammetry API starting up...")
-
-    # Create necessary directories
-    data_dir = Path(__file__).parent / "data"
-    output_dir = data_dir / "outputs"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    ortho_dir = data_dir / "orthophotos"
-    ortho_dir.mkdir(parents=True, exist_ok=True)
-
-    logger.info("Photogrammetry API startup complete")
-
-    yield
-    """Shutdown Events."""
-    logger.info("Photogrammetry API shutting down...")
-
 
 if __name__ == "__main__":
     import uvicorn
