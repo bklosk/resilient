@@ -76,7 +76,7 @@ For example, we could:
 
 ### Running the Pipeline 🚀
 
-The main entry point is now the FastAPI application in `app.py`. This provides both a web API and command-line interface for processing LiDAR point clouds with orthophotos.
+The main entry point is now the FastAPI application defined in `app.py`. This application provides a web API for processing LiDAR point clouds with orthophotos and other related functionalities.
 
 To run the pipeline:
 
@@ -84,30 +84,55 @@ To run the pipeline:
     ```bash
     source venv/bin/activate
     ```
+    (On Windows, use `venv\Scripts\activate`)
+
 2.  **Start the FastAPI application:**
+    You can run the application directly using Python:
     ```bash
     python app.py
     ```
-    Or run it directly with uvicorn:
-    ```bash
-    uvicorn app:app --reload
-    ```
-3.  **Use the API endpoints or web interface to process data:**
-    - Web interface: http://localhost:8000
-    - API documentation: http://localhost:8000/docs
-    - Example API call: POST to `/process` with address parameter
+    This will start the Uvicorn server, typically on `http://localhost:8000`. The server will automatically reload if you make changes to files in the `services` or `routers` directories.
 
-The script will process the data and print status messages to the console. Upon completion, it will save the colorized point cloud to a predefined location (e.g., `data/colorized_point_cloud.laz`). No separate visualization window will be opened by this script.
+    Alternatively, you can run it directly with Uvicorn for more control:
+    ```bash
+    uvicorn app:app --host 0.0.0.0 --port 8000 --reload --reload-dirs ./services --reload-dirs ./routers
+    ```
+
+3.  **Use the API endpoints or web interface to process data:**
+    *   **API Documentation (Swagger UI):** Once the server is running, you can access the interactive API documentation at [http://localhost:8000/docs](http://localhost:8000/docs).
+    *   **OpenAPI Specification:** The OpenAPI JSON schema is available at [http://localhost:8000/openapi.json](http://localhost:8000/openapi.json).
+    *   **Health Check:** Check the API status at [http://localhost:8000/health](http://localhost:8000/health).
+    *   **Processing Endpoint:** To initiate point cloud processing, send a POST request to the `/process` endpoint with an address (e.g., `{"address": "123 Main St"}`).
+
+    The application will process the data in the background. You can check the status of a job using its job ID via the `/job/{job_id}` endpoint and download results using `/download/{job_id}`. Output files are typically saved in the `data/outputs/` directory.
 
 ### Running Tests
 
-After installing the dependencies you can run the API test suite with:
+The project includes a comprehensive test suite. After installing dependencies (including development dependencies if separated in the future), you can run the tests using `pytest`.
 
-```bash
-pytest
-```
+1.  **Ensure your virtual environment is activated.** ✅
+    ```bash
+    source venv/bin/activate
+    ```
 
-The tests use lightweight stubs so they finish quickly without needing external data downloads.
+2.  **Run all tests:**
+    ```bash
+    pytest
+    ```
+    This command will discover and run all tests in the `tests/` directory. The tests are designed to use lightweight stubs and mocks, so they execute quickly without requiring external data downloads or live API calls for most unit/integration tests.
+
+3.  **Run specific test files or tests:**
+    You can run specific test files:
+    ```bash
+    pytest tests/test_api.py
+    ```
+    Or specific tests by name:
+    ```bash
+    pytest -k test_process_flow
+    ```
+
+4.  **Regression Tests (Dev Server):**
+    The file `tests/test_dev_server.py` contains tests that spin up a local development version of the FastAPI server with stubbed external services. These act as higher-level integration or regression tests for the API flow. They are included when you run `pytest`.
 
 ---
 
