@@ -63,19 +63,19 @@ def invert_image_colors(image_path: str, output_dir: Optional[str] = None) -> st
         # Save the inverted image
         inverted_img.save(out_path, optimize=False, compress_level=0)
         
-        print(f"Generated inverted image: {out_path}")
-        print(f"Original image mode: {img.mode}")
-        print(f"Inverted image mode: {inverted_img.mode}")
-        print(f"Inverted image resolution: {inverted_img.size[0]}x{inverted_img.size[1]} pixels")
-        print(f"Inverted image file size: {Path(out_path).stat().st_size} bytes")
+        logging.info(f"Generated inverted image: {out_path}")
+        logging.info(f"Original image mode: {img.mode}")
+        logging.info(f"Inverted image mode: {inverted_img.mode}")
+        logging.info(f"Inverted image resolution: {inverted_img.size[0]}x{inverted_img.size[1]} pixels")
+        logging.info(f"Inverted image file size: {Path(out_path).stat().st_size} bytes")
 
         return str(out_path)
 
     except FileNotFoundError:
-        print(f"Error: Input image file not found at {image_path}")
+        logging.error(f"Error: Input image file not found at {image_path}")
         raise
     except Exception as e:
-        print(f"An error occurred during image inversion: {e}")
+        logging.error(f"An error occurred during image inversion: {e}")
         raise
 
 if __name__ == '__main__':
