@@ -1,0 +1,27 @@
+Risk to Potential Structures
+(or Risk to Homes)
+A measure that integrates wildfire likelihood and intensity with generalized consequences to a home on every pixel. For every place on the landscape, it poses the hypothetical question, “What would be the relative risk to a house if one existed here?” 
+
+Burn Probability
+(or Wildfire Likelihood)
+The annual probability of wildfire burning in a specific location.
+
+Community Wildfire Risk Reduction Zones
+Areas where different types of mitigation activities can be most effective at reducing risk of structure losses from wildfire. Generally, there are four Risk Reduction Zones: Minimal Exposure Zone, Indirect Exposure Zone, Direct Exposure Zone, and Wildfire Transmission Zone. This layer is visible as the “Risk Reduction Zones” tab
+
+Exposure Type
+This layer is used in creating the Community Wildfire Risk Reduction Zones. For every pixel on the landscape, it delineates whether a structure at that location would be directly exposed to wildfire from adjacent wildland vegetation, indirectly exposed to wildfire from indirect sources such as embers and home-to-home ignition, or minimally exposed to wildfire due to distance from direct and indirect ignition sources. 
+
+Flame Length
+There are three layers:
+Conditional Flame Length: Most likely flame length at a given location if a fire occurs, based on all simulated fires; an average measure of wildfire intensity.
+4ft Flame Length Exceedance Probability: Probability of having flame lengths greater than 4 feet if a fire occurs; indicates the potential for moderate to high wildfire intensity.
+8ft Flame Length Exceedance Probability: Probability of having flame lengths greater than 8 feet if a fire occurs; indicates the potential for high wildfire intensity.
+
+Wildfire Hazard Potential
+An index that quantifies the relative potential for high-intensity wildfire that may be difficult to manage, used as a measure to help prioritize where fuel treatments may be needed. This layer integrates wildfire likelihood and intensity
+
+Conditional Risk to Potential Structures
+(or Wildfire Consequence)
+
+The potential consequences of fire to a home at a given location, if a fire occurs there and if a home were located there. This layer integrates wildfire intensity and generalized susceptibility of homes, but it does not include wildfire likelihood. 

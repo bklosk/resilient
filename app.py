@@ -38,6 +38,7 @@ from routers.health import router as health_router
 from routers.jobs import router as jobs_router
 from routers.images import router as images_router
 from routers.analysis import router as analysis_router
+from services.data.get_wrtc_tif import router as cog_router # Added import
 
 @asynccontextmanager
 async def lifespan(app : FastAPI):
@@ -96,6 +97,7 @@ app.include_router(health_router, tags=["health"])
 app.include_router(jobs_router, tags=["jobs"])
 app.include_router(images_router, tags=["images"])
 app.include_router(analysis_router, tags=["analysis"])
+app.include_router(cog_router) # Added router
 
 if __name__ == "__main__":
     import uvicorn

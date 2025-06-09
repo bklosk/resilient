@@ -18,3 +18,4 @@ openai
 pillow
 pystac
 shapely
+rio-tiler
