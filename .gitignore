@@ -8,6 +8,7 @@
 /checkpoints/*
 /data/wrtc/cogs/*
 /hazus/data
+/data/stac_catalog/*
 
 # Python cache and bytecode
 __pycache__/
