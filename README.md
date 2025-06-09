@@ -1,5 +1,4 @@
-# Photogrammetree 🌳
-## Climate Disaster Mitigation 🌍
+## Climate Resilience as a product 🌍
 
 This project utilizes **LiDAR** data 🛰️ and **orthophotos** 📸 to create 3D models of environments. The primary goal is to identify and analyze features that can be modified to mitigate climate-related risks such as flooding, heat islands, or wildfire spread.
 
