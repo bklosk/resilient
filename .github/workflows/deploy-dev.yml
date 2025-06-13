@@ -1,5 +1,9 @@
 name: Deploy to Dev Server
-on: { push: { branches: [main] } }
+
+on:
+  push:
+    branches: [main]
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -19,120 +23,87 @@ jobs:
         username: ${{ secrets.DO_DEV_SERVER_USER }}
         password: ${{ secrets.DO_DEV_SERVER_PASS }}
         script: |
-          set -e  # Exit on any error
+          set -e
           
-          echo "🚀 Starting deployment..."
+          echo "🚀 Starting Docker deployment..."
           
-          # Install nginx if not already installed
-          if ! which nginx; then
-            echo "📦 Installing nginx..."
-            apt update && apt install -y nginx
+          # Install Docker if not present
+          if ! command -v docker &> /dev/null; then
+            echo "📦 Installing Docker..."
+            curl -fsSL https://get.docker.com -o get-docker.sh
+            sh get-docker.sh
+            systemctl start docker
+            systemctl enable docker
           fi
           
-          # Deploy application
-          echo "📁 Setting up application directory..."
-          mkdir -p /opt/photogrammetry
+          # Install Docker Compose if not present
+          if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
+            echo "📦 Installing Docker Compose..."
+            curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-\$(uname -s)-\$(uname -m)" -o /usr/local/bin/docker-compose
+            chmod +x /usr/local/bin/docker-compose
+          fi
+          
+          # Use docker compose or docker-compose
+          COMPOSE_CMD="docker-compose"
+          if docker compose version &> /dev/null; then
+            COMPOSE_CMD="docker compose"
+          fi
+          echo "Using compose command: \$COMPOSE_CMD"
+          
+          # Setup application directory
+          echo "📁 Setting up application..."
+          mkdir -p /opt/photogrammetry/data
+          mkdir -p /opt/photogrammetry/logs
           cd /opt/photogrammetry
           tar -xzf /tmp/app.tar.gz
           
-          # Stop existing application
-          echo "🛑 Stopping existing application..."
-          killall -q uvicorn 2>/dev/null || true
+          # Stop existing containers
+          echo "🛑 Stopping existing containers..."
+          \$COMPOSE_CMD down 2>/dev/null || true
           
-          # Install Python dependencies
-          echo "📚 Installing Python dependencies..."
-          python3 -m pip install -r requirements.txt --user --disable-pip-version-check --upgrade-strategy only-if-needed || {
-            echo "📦 Installing pip and dependencies..."
-            apt update && apt install -y python3-pip
-            python3 -m pip install -r requirements.txt --user
-          }
+          # Clean up old containers and images to save space
+          docker system prune -f 2>/dev/null || true
           
-          # Configure nginx reverse proxy
-          echo "⚙️  Configuring nginx..."
-          if [ ! -f deployment/nginx/http.conf ]; then
-            echo "❌ nginx config file not found!"
-            exit 1
-          fi
-          cp deployment/nginx/http.conf /etc/nginx/sites-available/photogrammetry
+          # Build and start containers
+          echo "🔨 Building and starting containers..."
+          \$COMPOSE_CMD up -d --build
           
-          # Test nginx configuration
-          echo "🧪 Testing nginx configuration..."
-          if ! nginx -t; then
-            echo "❌ Nginx configuration test failed"
-            cat /etc/nginx/sites-available/photogrammetry
-            exit 1
-          fi
+          # Wait for services to start
+          echo "⏳ Waiting for services to start..."
+          sleep 15
           
-          # Enable the site and remove default
-          echo "🔗 Enabling site..."
-          ln -sf /etc/nginx/sites-available/photogrammetry /etc/nginx/sites-enabled/
-          rm -f /etc/nginx/sites-enabled/default
+          # Check container status
+          echo "📊 Container status:"
+          \$COMPOSE_CMD ps
           
-          # Configure firewall if ufw is active
-          if ufw status | grep -q "Status: active"; then
-            echo "🔥 Configuring firewall..."
-            ufw allow 80/tcp
-            ufw allow 443/tcp
-          fi
-          
-          # Restart and enable nginx
-          echo "🌐 Starting nginx..."
-          systemctl restart nginx
-          systemctl enable nginx
-          
-          # Verify nginx is running
-          if ! systemctl is-active nginx >/dev/null; then
-            echo "❌ Failed to start nginx"
-            systemctl status nginx
-            journalctl -u nginx --no-pager -n 20
-            exit 1
-          fi
-          
-          # Start the application (bind to localhost only since nginx will proxy)
-          echo "🐍 Starting FastAPI application..."
-          setsid python3 -m uvicorn app:app --host 127.0.0.1 --port 8000 </dev/null >/dev/null 2>&1 &
-          APP_PID=$!
-          
-          # Wait and verify the app is running
-          echo "⏳ Waiting for application to start..."
-          sleep 5
-          
-          # Check if process is still running
-          if ! kill -0 $APP_PID 2>/dev/null; then
-            echo "❌ Application failed to start"
-            exit 1
-          fi
-          
-          # Test application health
-          echo "🔍 Testing application health..."
-          for i in {1..10}; do
-            if curl -f http://127.0.0.1:8000/health >/dev/null 2>&1; then
-              echo "✅ Application health check passed"
+          # Wait for health checks with better error handling
+          echo "🔍 Waiting for health checks..."
+          for i in {1..30}; do
+            if \$COMPOSE_CMD ps | grep -E "(healthy|running)" | wc -l | grep -q "2"; then
+              echo "✅ Services are running"
               break
             fi
-            if [ $i -eq 10 ]; then
-              echo "❌ Application health check failed after 10 attempts"
-              echo "📋 Application logs:"
-              tail -20 /opt/photogrammetry/logs/point_cloud_processing.log 2>/dev/null || echo "No logs found"
+            if [ \$i -eq 30 ]; then
+              echo "❌ Health check timeout after 30 attempts"
+              echo "📋 Container logs:"
+              \$COMPOSE_CMD logs
               exit 1
             fi
-            echo "   Attempt $i/10 failed, retrying..."
+            echo "   Attempt \$i/30 - waiting for services..."
             sleep 2
           done
           
-          # Test reverse proxy
-          echo "🔍 Testing reverse proxy..."
+          # Test the deployment
+          echo "🔍 Testing deployment..."
           if curl -f http://localhost/health >/dev/null 2>&1; then
-            echo "✅ Reverse proxy working"
+            echo "✅ Deployment successful!"
+            echo "🌐 API available at: http://\$(curl -s ifconfig.me 2>/dev/null || echo 'your-server-ip')"
+            echo "📊 Final status:"
+            \$COMPOSE_CMD ps
           else
-            echo "❌ Reverse proxy failed"
-            echo "📋 Nginx error logs:"
-            tail -10 /var/log/nginx/error.log 2>/dev/null || echo "No error logs"
+            echo "❌ Deployment failed - health check unsuccessful"
+            echo "📋 Detailed logs:"
+            \$COMPOSE_CMD logs app
+            \$COMPOSE_CMD logs nginx
             exit 1
           fi
-          
-          echo "🎉 Deployment completed successfully!"
-          echo "📊 Service status:"
-          echo "   - Application PID: $APP_PID"
-          echo "   - Nginx: $(systemctl is-active nginx)"
-          echo "   - Health check: http://$(curl -s ifconfig.me)/health"

@@ -45,9 +45,9 @@ The project is structured to separate concerns and make navigation and developme
     *   `outputs/`: Default location for processed files (e.g., colorized point clouds).
     *   `orthophotos/`: Storage for downloaded orthophotos.
     *   `hazus/`, `spatial_index.json`: Related to specific data sources or indexing.
-*   **`deployment/`**: Deployment configuration and scripts.
-    *   `nginx/`: Nginx configuration files for HTTP and HTTPS.
-    *   `scripts/`: Deployment automation and monitoring scripts.
+*   **`deployment/`**: Docker deployment configuration.
+    *   `nginx.conf`: Nginx reverse proxy configuration.
+    *   `ssl/`: SSL certificates directory.
 *   **`requirements.txt`**: Lists Python dependencies for the project.
 *   **`README.md`**: This file! Provides an overview of the project.
 
@@ -151,31 +151,41 @@ The project uses `pytest` for testing.
 
 ## Deployment 🚀
 
-### Development Server Deployment
+### Docker-based Deployment
 
-The application is automatically deployed to a DigitalOcean development server via GitHub Actions when changes are pushed to the `main` branch.
+The application uses Docker for simple, consistent deployment across environments.
+
+**Local Development:**
+```bash
+docker-compose up -d
+```
+
+**Production:** Automatically deployed via GitHub Actions to DigitalOcean when pushing to `main` branch.
 
 **Architecture:**
-- **Nginx Reverse Proxy:** Runs on ports 80/443 and proxies requests to the FastAPI application
-- **FastAPI Application:** Runs on `localhost:8000` (not exposed to the internet)
-- **Automatic Deployment:** GitHub Actions workflow deploys on every push to main
-
-**How it works:**
-1. The application runs on `http://127.0.0.1:8000` (localhost only)
-2. Nginx listens on port 80 (HTTP) and proxies all requests to the FastAPI app
-3. This setup allows the application to be accessible on standard HTTP ports while keeping the application server secure
+- **Docker Container:** FastAPI application runs in isolated container
+- **Nginx Reverse Proxy:** Handles HTTP/HTTPS and proxies to application
+- **Automatic Scaling:** Docker handles process management and restarts
+- **Health Monitoring:** Built-in health checks for both services
 
 **Features:**
-- **Large file uploads:** Supports up to 100MB file uploads
-- **Gzip compression:** Enabled for better performance
-- **Health monitoring:** Dedicated `/health` endpoint for monitoring
-- **Optimized buffering:** Configured for handling large point cloud data
-- **Security:** Application only accessible via reverse proxy
+- ✅ **Simple Setup:** Single `docker-compose up` command
+- ✅ **Isolated Environment:** No dependency conflicts
+- ✅ **Automatic Restarts:** Containers restart on failure
+- ✅ **Easy SSL:** Drop certificates in `deployment/ssl/` and restart
+- ✅ **Scalable:** Easy to add more containers or services
 
-**Configuration Files:**
-All deployment configurations and scripts are organized in the `deployment/` directory:
-- `deployment/nginx/` - Nginx configuration files
-- `deployment/scripts/` - Setup and monitoring scripts
-- See `deployment/README.md` for detailed documentation
+**Deployment Files:**
+- `Dockerfile` - Application container definition
+- `docker-compose.yml` - Multi-service orchestration
+- `deployment/nginx.conf` - Reverse proxy configuration
+- `deployment/ssl/` - SSL certificates directory
+
+**Monitoring:**
+```bash
+docker-compose ps              # Check container status
+docker-compose logs -f app     # View application logs
+docker-compose logs -f nginx   # View nginx logs
+```
 
 ---

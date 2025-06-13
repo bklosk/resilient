@@ -65,3 +65,8 @@ wheels/
 deployment/nginx/*.tmp
 deployment/scripts/*.log
 deployment/*.backup
+
+# Docker
+.dockerignore
+deployment/ssl/*.pem
+deployment/ssl/*.key
