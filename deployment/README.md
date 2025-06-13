@@ -47,6 +47,27 @@ Automated script that:
 sudo ./scripts/setup-https.sh api.example.com admin@example.com
 ```
 
+### `scripts/troubleshoot-502.sh`
+**Usage:** `./troubleshoot-502.sh`
+
+Comprehensive diagnostic script for 502 Bad Gateway errors that checks:
+- Nginx installation and configuration
+- FastAPI application status
+- Reverse proxy functionality
+- Firewall and networking
+- System resources and logs
+- Provides specific fix suggestions
+
+### `scripts/quick-fix-502.sh`
+**Usage:** `./quick-fix-502.sh`
+
+Emergency fix script that:
+- Stops and restarts all services
+- Reconfigures nginx if needed
+- Starts FastAPI application
+- Tests the complete setup
+- Provides status and access information
+
 ### `scripts/check-deployment.sh`
 **Usage:** `./check-deployment.sh`
 
@@ -70,3 +91,54 @@ Status monitoring script that checks:
 - All external access goes through the nginx reverse proxy
 - HTTPS configuration includes modern security headers
 - Large file uploads are supported for point cloud data processing
+
+## Troubleshooting 502 Errors
+
+### Common Causes on DigitalOcean Droplets:
+
+1. **FastAPI Application Not Running**
+   - GitHub Actions deployment failed
+   - Python dependencies missing
+   - Application crashed after startup
+   - Wrong working directory
+
+2. **Nginx Configuration Issues**
+   - Configuration file not copied correctly
+   - Syntax errors in nginx config
+   - Site not enabled
+   - Default site conflicting
+
+3. **Network/Firewall Issues**
+   - UFW firewall blocking ports 80/443
+   - DigitalOcean firewall rules
+   - Application binding to wrong interface
+
+4. **Resource Issues**
+   - Out of memory
+   - Disk space full
+   - Too many processes
+
+### Quick Diagnosis:
+```bash
+# SSH into your droplet
+ssh user@your-droplet-ip
+
+# Run the troubleshooting script
+cd /opt/photogrammetry
+./deployment/scripts/troubleshoot-502.sh
+```
+
+### Quick Fix:
+```bash
+# Emergency fix for most common issues
+./deployment/scripts/quick-fix-502.sh
+```
+
+### Manual Recovery:
+```bash
+# If scripts don't work, manual steps:
+sudo systemctl restart nginx
+killall uvicorn
+cd /opt/photogrammetry
+python3 -m uvicorn app:app --host 127.0.0.1 --port 8000 &
+```

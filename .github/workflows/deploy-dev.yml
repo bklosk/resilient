@@ -19,40 +19,120 @@ jobs:
         username: ${{ secrets.DO_DEV_SERVER_USER }}
         password: ${{ secrets.DO_DEV_SERVER_PASS }}
         script: |
+          set -e  # Exit on any error
+          
+          echo "🚀 Starting deployment..."
+          
           # Install nginx if not already installed
-          which nginx || (apt update && apt install -y nginx)
+          if ! which nginx; then
+            echo "📦 Installing nginx..."
+            apt update && apt install -y nginx
+          fi
           
           # Deploy application
+          echo "📁 Setting up application directory..."
           mkdir -p /opt/photogrammetry
           cd /opt/photogrammetry
           tar -xzf /tmp/app.tar.gz
+          
+          # Stop existing application
+          echo "🛑 Stopping existing application..."
           killall -q uvicorn 2>/dev/null || true
-          python3 -m pip install -r requirements.txt --user --disable-pip-version-check --upgrade-strategy only-if-needed || (apt update && apt install -y python3-pip && python3 -m pip install -r requirements.txt --user)
+          
+          # Install Python dependencies
+          echo "📚 Installing Python dependencies..."
+          python3 -m pip install -r requirements.txt --user --disable-pip-version-check --upgrade-strategy only-if-needed || {
+            echo "📦 Installing pip and dependencies..."
+            apt update && apt install -y python3-pip
+            python3 -m pip install -r requirements.txt --user
+          }
           
           # Configure nginx reverse proxy
+          echo "⚙️  Configuring nginx..."
+          if [ ! -f deployment/nginx/http.conf ]; then
+            echo "❌ nginx config file not found!"
+            exit 1
+          fi
           cp deployment/nginx/http.conf /etc/nginx/sites-available/photogrammetry
           
           # Test nginx configuration
-          nginx -t
-          if [ $? -ne 0 ]; then
-              echo "Nginx configuration test failed"
-              exit 1
+          echo "🧪 Testing nginx configuration..."
+          if ! nginx -t; then
+            echo "❌ Nginx configuration test failed"
+            cat /etc/nginx/sites-available/photogrammetry
+            exit 1
           fi
           
           # Enable the site and remove default
+          echo "🔗 Enabling site..."
           ln -sf /etc/nginx/sites-available/photogrammetry /etc/nginx/sites-enabled/
           rm -f /etc/nginx/sites-enabled/default
           
+          # Configure firewall if ufw is active
+          if ufw status | grep -q "Status: active"; then
+            echo "🔥 Configuring firewall..."
+            ufw allow 80/tcp
+            ufw allow 443/tcp
+          fi
+          
           # Restart and enable nginx
+          echo "🌐 Starting nginx..."
           systemctl restart nginx
           systemctl enable nginx
           
           # Verify nginx is running
-          systemctl is-active nginx || (echo "Failed to start nginx" && exit 1)
+          if ! systemctl is-active nginx >/dev/null; then
+            echo "❌ Failed to start nginx"
+            systemctl status nginx
+            journalctl -u nginx --no-pager -n 20
+            exit 1
+          fi
           
           # Start the application (bind to localhost only since nginx will proxy)
+          echo "🐍 Starting FastAPI application..."
           setsid python3 -m uvicorn app:app --host 127.0.0.1 --port 8000 </dev/null >/dev/null 2>&1 &
+          APP_PID=$!
           
-          # Wait a moment and verify the app is running
-          sleep 3
-          curl -f http://127.0.0.1:8000/health || echo "Warning: Application health check failed"
+          # Wait and verify the app is running
+          echo "⏳ Waiting for application to start..."
+          sleep 5
+          
+          # Check if process is still running
+          if ! kill -0 $APP_PID 2>/dev/null; then
+            echo "❌ Application failed to start"
+            exit 1
+          fi
+          
+          # Test application health
+          echo "🔍 Testing application health..."
+          for i in {1..10}; do
+            if curl -f http://127.0.0.1:8000/health >/dev/null 2>&1; then
+              echo "✅ Application health check passed"
+              break
+            fi
+            if [ $i -eq 10 ]; then
+              echo "❌ Application health check failed after 10 attempts"
+              echo "📋 Application logs:"
+              tail -20 /opt/photogrammetry/logs/point_cloud_processing.log 2>/dev/null || echo "No logs found"
+              exit 1
+            fi
+            echo "   Attempt $i/10 failed, retrying..."
+            sleep 2
+          done
+          
+          # Test reverse proxy
+          echo "🔍 Testing reverse proxy..."
+          if curl -f http://localhost/health >/dev/null 2>&1; then
+            echo "✅ Reverse proxy working"
+          else
+            echo "❌ Reverse proxy failed"
+            echo "📋 Nginx error logs:"
+            tail -10 /var/log/nginx/error.log 2>/dev/null || echo "No error logs"
+            exit 1
+          fi
+          
+          echo "🎉 Deployment completed successfully!"
+          echo "📊 Service status:"
+          echo "   - Application PID: $APP_PID"
+          echo "   - Nginx: $(systemctl is-active nginx)"
+          echo "   - Health check: http://$(curl -s ifconfig.me)/health"

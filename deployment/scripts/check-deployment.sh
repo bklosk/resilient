@@ -7,9 +7,13 @@ echo
 
 # Check if nginx is running
 echo "🔍 Checking nginx status..."
-if systemctl is-active --quiet nginx; then
+if pgrep nginx > /dev/null; then
     echo "✅ Nginx is running"
-    nginx -t 2>/dev/null && echo "✅ Nginx configuration is valid" || echo "❌ Nginx configuration has errors"
+    if sudo nginx -t 2>/dev/null; then
+        echo "✅ Nginx configuration is valid"
+    else
+        echo "❌ Nginx configuration has errors"
+    fi
 else
     echo "❌ Nginx is not running"
 fi
