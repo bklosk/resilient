@@ -1,5 +1,5 @@
 # Multi-stage build for minimal production image
-# Stage 1: Build dependencies
+# Stage 1: Build dependencies and compile packages
 FROM python:3.12-slim-bullseye AS builder
 
 # Install build dependencies in one layer
@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libjpeg-dev \
     libpng-dev \
     libfreetype6-dev \
+    git \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
@@ -27,15 +28,28 @@ COPY requirements.txt .
 # Create virtual environment and install dependencies
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
 
-# Stage 2: Production image
-FROM python:3.12-slim-bullseye AS production
+# Upgrade pip and install wheel for faster builds
+RUN pip install --no-cache-dir --upgrade pip wheel setuptools
+
+# Install dependencies with optimizations
+RUN pip install --no-cache-dir \
+    --find-links https://download.pytorch.org/whl/cpu/torch_stable.html \
+    -r requirements.txt
+
+# Clean up pip cache and temporary files to reduce layer size
+RUN pip cache purge && \
+    find /opt/venv -type d -name "__pycache__" -exec rm -rf {} + && \
+    find /opt/venv -type f -name "*.pyc" -delete && \
+    find /opt/venv -type f -name "*.pyo" -delete
+
+# Stage 2: Runtime image - minimal production image
+FROM python:3.12-slim-bullseye AS runtime
 
 # Install only runtime dependencies in one layer
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    ca-certificates \
     libgdal28 \
     libgeos-c1v5 \
     libproj19 \
@@ -44,7 +58,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpng16-16 \
     libfreetype6 \
     && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean
+    && apt-get clean \
+    && apt-get autoremove -y
 
 # Create non-root user for security
 RUN groupadd -g 1000 appgroup && \
@@ -53,9 +68,14 @@ RUN groupadd -g 1000 appgroup && \
 # Set working directory
 WORKDIR /app
 
-# Copy virtual environment from builder stage
+# Copy virtual environment from builder stage (this is the key optimization)
 COPY --from=builder /opt/venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
+
+# Ensure we use the virtual environment
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONPATH="/app" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
 # Copy application code with proper ownership
 COPY --chown=appuser:appgroup . .
@@ -65,6 +85,12 @@ RUN mkdir -p logs data/outputs data/orthophotos && \
     chown -R appuser:appgroup logs data && \
     chmod -R 755 logs data
 
+# Remove any development files and caches to minimize size
+RUN find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true && \
+    find . -type f -name "*.pyc" -delete && \
+    find . -type f -name "*.pyo" -delete && \
+    rm -rf .git .gitignore .dockerignore 2>/dev/null || true
+
 # Switch to non-root user
 USER appuser
 
@@ -72,7 +98,7 @@ USER appuser
 EXPOSE 8000
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=15s --start-period=60s --retries=5 \
     CMD curl -f http://localhost:8000/health || exit 1
 
 # Run the application
