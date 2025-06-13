@@ -3,6 +3,9 @@ from fastapi.responses import StreamingResponse # Added
 from rio_tiler.io import COGReader
 from typing import Optional, Dict, Any
 import io # Added
+import os
+import boto3
+from botocore.exceptions import NoCredentialsError, ClientError
 
 router = APIRouter(prefix="/cog", tags=["cog"])
 
@@ -43,15 +46,53 @@ LAYERS_PREFIX: Dict[str, str] = {
 }
 
 COG_INDEX: Dict[str, Dict[str, str]] = {}
-BASE_URL = "https://wrtc.nyc3.cdn.digitaloceanspaces.com"
+
+# Get DigitalOcean Spaces configuration from environment
+DO_SPACES_ENDPOINT = os.getenv('DO_SPACES_ENDPOINT', 'https://nyc3.digitaloceanspaces.com')
+DO_SPACES_REGION = os.getenv('DO_SPACES_REGION', 'nyc3')
+DO_SPACES_KEY = os.getenv('DO_SPACES_KEY')
+DO_SPACES_SECRET = os.getenv('DO_SPACES_SECRET')
+DO_SPACES_BUCKET = os.getenv('DO_SPACES_BUCKET', 'wrtc')
+
+def get_s3_client():
+    """Create and return a DigitalOcean Spaces S3 client"""
+    if not DO_SPACES_KEY or not DO_SPACES_SECRET:
+        raise HTTPException(
+            status_code=500, 
+            detail="DigitalOcean Spaces credentials not configured"
+        )
+    
+    return boto3.client(
+        's3',
+        endpoint_url=DO_SPACES_ENDPOINT,
+        region_name=DO_SPACES_REGION,
+        aws_access_key_id=DO_SPACES_KEY,
+        aws_secret_access_key=DO_SPACES_SECRET
+    )
+
+def get_signed_url(s3_key: str, expiration: int = 3600) -> str:
+    """Generate a signed URL for accessing the S3 object"""
+    try:
+        s3_client = get_s3_client()
+        url = s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': DO_SPACES_BUCKET, 'Key': s3_key},
+            ExpiresIn=expiration
+        )
+        return url
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error generating signed URL for {s3_key}: {str(e)}"
+        )
 
 for state_abbr, state_full_name in STATES_DATA.items():
     COG_INDEX[state_abbr] = {}
     for layer_api_name, layer_prefix in LAYERS_PREFIX.items():
-        # The URL path uses the full state name (e.g., "Alabama", "New York", "District of Columbia")
-        # The COG filename uses the state abbreviation (e.g., BP_AL_cog.tif)
+        # Store the S3 key instead of a full URL
+        # The S3 key uses the full state name as folder (e.g., "Colorado/BP_CO_cog.tif")
         cog_filename = f"{layer_prefix}_{state_abbr}_cog.tif"
-        COG_INDEX[state_abbr][layer_api_name] = f"{BASE_URL}/{state_full_name}/{cog_filename}"
+        COG_INDEX[state_abbr][layer_api_name] = f"{state_full_name}/{cog_filename}"
 
 
 @router.get("/point", summary="Get pixel value at lon/lat")
@@ -66,18 +107,21 @@ async def point_lookup(
     Retrieves a pixel value from a Cloud Optimized GeoTIFF (COG) for a given state, layer,
     longitude, latitude, and band.
     """
-    # 1) Resolve URL
+    # 1) Resolve S3 key
     state_layers = COG_INDEX.get(state)
     if not state_layers:
         # This should not happen if enum validation works, but as a safeguard:
         raise HTTPException(status_code=404, detail=f"State '{state}' not found.")
 
-    url = state_layers.get(layer)
-    if not url:
+    s3_key = state_layers.get(layer)
+    if not s3_key:
         # This should not happen if enum validation works, but as a safeguard:
         raise HTTPException(status_code=404, detail=f"Layer '{layer}' not found for state '{state}'.")
+    
+    # 2) Generate signed URL for authenticated access
+    url = get_signed_url(s3_key)
 
-    # 2) Read the pixel
+    # 3) Read the pixel
     try:
         with COGReader(url) as cog:
             # rio-tiler expects 'indexes' to be a tuple or list of band numbers
@@ -124,19 +168,22 @@ async def raster_lookup(
     Retrieves a raster image (PNG) from a Cloud Optimized GeoTIFF (COG)
     for a given state, layer, bounding box, and output dimensions.
     """
-    # 1) Resolve URL
+    # 1) Resolve S3 key
     state_layers = COG_INDEX.get(state)
     if not state_layers:
         raise HTTPException(status_code=404, detail=f"State '{state}' not found.")
 
-    url = state_layers.get(layer)
-    if not url:
+    s3_key = state_layers.get(layer)
+    if not s3_key:
         raise HTTPException(status_code=404, detail=f"Layer '{layer}' not found for state '{state}'.")
-
+    
+    # 2) Generate signed URL for authenticated access
+    url = get_signed_url(s3_key)
+    
     # Define bounding box
     bbox = (min_lon, min_lat, max_lon, max_lat)
 
-    # 2) Read the raster part
+    # 3) Read the raster part
     try:
         with COGReader(url) as cog:
             # rio-tiler expects 'indexes' to be a tuple or list of band numbers
