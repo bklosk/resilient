@@ -19,9 +19,20 @@ jobs:
         username: ${{ secrets.DO_DEV_SERVER_USER }}
         password: ${{ secrets.DO_DEV_SERVER_PASS }}
         script: |
+          echo "Step 1: Creating directory"
           mkdir -p /opt/photogrammetry
+          echo "Step 2: Changing to directory"
           cd /opt/photogrammetry
+          echo "Step 3: Extracting tarball"
           tar -xzf /tmp/app.tar.gz
+          echo "Step 4: Killing existing processes"
           pkill -f "uvicorn app:app" || true
-          python3 -m pip install -r requirements.txt --user --disable-pip-version-check --upgrade-strategy only-if-needed || (apt update && apt install -y python3-pip && python3 -m pip install -r requirements.txt --user)
+          echo "Step 5: Installing dependencies"
+          python3 -m pip install -r requirements.txt --user --disable-pip-version-check --upgrade-strategy only-if-needed || (echo "Pip failed, trying apt install" && apt update && apt install -y python3-pip && python3 -m pip install -r requirements.txt --user)
+          echo "Step 6: Starting uvicorn"
           setsid python3 -m uvicorn app:app --host 0.0.0.0 --port 8000 </dev/null >/dev/null 2>&1 &
+          echo "Step 7: Process started with PID $!"
+          sleep 1
+          echo "Step 8: Checking if process is running"
+          ps aux | grep uvicorn | grep -v grep || echo "Process not found"
+          echo "Deployment complete"
