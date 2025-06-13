@@ -60,3 +60,8 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+
+# Deployment temporary files
+deployment/nginx/*.tmp
+deployment/scripts/*.log
+deployment/*.backup

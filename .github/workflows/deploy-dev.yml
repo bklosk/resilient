@@ -19,9 +19,40 @@ jobs:
         username: ${{ secrets.DO_DEV_SERVER_USER }}
         password: ${{ secrets.DO_DEV_SERVER_PASS }}
         script: |
+          # Install nginx if not already installed
+          which nginx || (apt update && apt install -y nginx)
+          
+          # Deploy application
           mkdir -p /opt/photogrammetry
           cd /opt/photogrammetry
           tar -xzf /tmp/app.tar.gz
           killall -q uvicorn 2>/dev/null || true
           python3 -m pip install -r requirements.txt --user --disable-pip-version-check --upgrade-strategy only-if-needed || (apt update && apt install -y python3-pip && python3 -m pip install -r requirements.txt --user)
-          setsid python3 -m uvicorn app:app --host 0.0.0.0 --port 8000 </dev/null >/dev/null 2>&1 &
+          
+          # Configure nginx reverse proxy
+          cp deployment/nginx/http.conf /etc/nginx/sites-available/photogrammetry
+          
+          # Test nginx configuration
+          nginx -t
+          if [ $? -ne 0 ]; then
+              echo "Nginx configuration test failed"
+              exit 1
+          fi
+          
+          # Enable the site and remove default
+          ln -sf /etc/nginx/sites-available/photogrammetry /etc/nginx/sites-enabled/
+          rm -f /etc/nginx/sites-enabled/default
+          
+          # Restart and enable nginx
+          systemctl restart nginx
+          systemctl enable nginx
+          
+          # Verify nginx is running
+          systemctl is-active nginx || (echo "Failed to start nginx" && exit 1)
+          
+          # Start the application (bind to localhost only since nginx will proxy)
+          setsid python3 -m uvicorn app:app --host 127.0.0.1 --port 8000 </dev/null >/dev/null 2>&1 &
+          
+          # Wait a moment and verify the app is running
+          sleep 3
+          curl -f http://127.0.0.1:8000/health || echo "Warning: Application health check failed"

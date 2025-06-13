@@ -45,6 +45,9 @@ The project is structured to separate concerns and make navigation and developme
     *   `outputs/`: Default location for processed files (e.g., colorized point clouds).
     *   `orthophotos/`: Storage for downloaded orthophotos.
     *   `hazus/`, `spatial_index.json`: Related to specific data sources or indexing.
+*   **`deployment/`**: Deployment configuration and scripts.
+    *   `nginx/`: Nginx configuration files for HTTP and HTTPS.
+    *   `scripts/`: Deployment automation and monitoring scripts.
 *   **`requirements.txt`**: Lists Python dependencies for the project.
 *   **`README.md`**: This file! Provides an overview of the project.
 
@@ -146,6 +149,33 @@ The project uses `pytest` for testing.
     ```
     As per your instructions, regression tests using `test_dev_server.py` are included in the default `pytest` run.
 
----
+## Deployment 🚀
 
-Fighting climate change, one point cloud at a time! ✨🌍🌳
+### Development Server Deployment
+
+The application is automatically deployed to a DigitalOcean development server via GitHub Actions when changes are pushed to the `main` branch.
+
+**Architecture:**
+- **Nginx Reverse Proxy:** Runs on ports 80/443 and proxies requests to the FastAPI application
+- **FastAPI Application:** Runs on `localhost:8000` (not exposed to the internet)
+- **Automatic Deployment:** GitHub Actions workflow deploys on every push to main
+
+**How it works:**
+1. The application runs on `http://127.0.0.1:8000` (localhost only)
+2. Nginx listens on port 80 (HTTP) and proxies all requests to the FastAPI app
+3. This setup allows the application to be accessible on standard HTTP ports while keeping the application server secure
+
+**Features:**
+- **Large file uploads:** Supports up to 100MB file uploads
+- **Gzip compression:** Enabled for better performance
+- **Health monitoring:** Dedicated `/health` endpoint for monitoring
+- **Optimized buffering:** Configured for handling large point cloud data
+- **Security:** Application only accessible via reverse proxy
+
+**Configuration Files:**
+All deployment configurations and scripts are organized in the `deployment/` directory:
+- `deployment/nginx/` - Nginx configuration files
+- `deployment/scripts/` - Setup and monitoring scripts
+- See `deployment/README.md` for detailed documentation
+
+---
