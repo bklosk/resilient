@@ -24,5 +24,4 @@ jobs:
           tar -xzf /tmp/app.tar.gz
           pkill -f "uvicorn app:app" || true
           python3 -m pip install -r requirements.txt --user --disable-pip-version-check --upgrade-strategy only-if-needed || (apt update && apt install -y python3-pip && python3 -m pip install -r requirements.txt --user)
-          python3 -m uvicorn app:app --host 0.0.0.0 --port 8000 &
-          disown
+          setsid python3 -m uvicorn app:app --host 0.0.0.0 --port 8000 </dev/null >/dev/null 2>&1 &
