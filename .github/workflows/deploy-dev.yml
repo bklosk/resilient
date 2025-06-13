@@ -18,4 +18,4 @@ jobs:
         host: ${{ secrets.DO_DEV_SERVER_IP }}
         username: ${{ secrets.DO_DEV_SERVER_USER }}
         password: ${{ secrets.DO_DEV_SERVER_PASS }}
-        script: mkdir -p /opt/photogrammetry;cd /opt/photogrammetry;tar -xzf /tmp/app.tar.gz;pkill -f "uvicorn app:app"||true;python3 -m pip install -r requirements.txt --user --disable-pip-version-check --upgrade-strategy only-if-needed||apt update&&apt install -y python3-pip&&python3 -m pip install -r requirements.txt --user;nohup python3 -m uvicorn app:app --host 0.0.0.0 --port 8000 </dev/null >/dev/null 2>&1 &
+        script: mkdir -p /opt/photogrammetry;cd /opt/photogrammetry;tar -xzf /tmp/app.tar.gz;pkill -f "uvicorn app:app"||true;python3 -m pip install -r requirements.txt --user --disable-pip-version-check --upgrade-strategy only-if-needed||apt update&&apt install -y python3-pip&&python3 -m pip install -r requirements.txt --user;nohup python3 -m uvicorn app:app --host 0.0.0.0 --port 8000 </dev/null >/dev/null 2>&1 & echo "App started";sleep 2
