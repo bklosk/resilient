@@ -39,16 +39,21 @@ jobs:
           # Install Docker Compose if not present
           if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
             echo "📦 Installing Docker Compose..."
-            curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-\$(uname -s)-\$(uname -m)" -o /usr/local/bin/docker-compose
+            curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
             chmod +x /usr/local/bin/docker-compose
           fi
           
-          # Use docker compose or docker-compose
-          COMPOSE_CMD="docker-compose"
+          # Determine which compose command to use
           if docker compose version &> /dev/null; then
+            echo "Using docker compose (v2)"
             COMPOSE_CMD="docker compose"
+          elif command -v docker-compose &> /dev/null; then
+            echo "Using docker-compose (v1)"
+            COMPOSE_CMD="docker-compose"
+          else
+            echo "❌ No Docker Compose found!"
+            exit 1
           fi
-          echo "Using compose command: \$COMPOSE_CMD"
           
           # Setup application directory
           echo "📁 Setting up application..."
@@ -59,14 +64,14 @@ jobs:
           
           # Stop existing containers
           echo "🛑 Stopping existing containers..."
-          \$COMPOSE_CMD down 2>/dev/null || true
+          $COMPOSE_CMD down 2>/dev/null || true
           
           # Clean up old containers and images to save space
           docker system prune -f 2>/dev/null || true
           
           # Build and start containers
           echo "🔨 Building and starting containers..."
-          \$COMPOSE_CMD up -d --build
+          $COMPOSE_CMD up -d --build
           
           # Wait for services to start
           echo "⏳ Waiting for services to start..."
@@ -74,22 +79,22 @@ jobs:
           
           # Check container status
           echo "📊 Container status:"
-          \$COMPOSE_CMD ps
+          $COMPOSE_CMD ps
           
           # Wait for health checks with better error handling
           echo "🔍 Waiting for health checks..."
           for i in {1..30}; do
-            if \$COMPOSE_CMD ps | grep -E "(healthy|running)" | wc -l | grep -q "2"; then
+            if $COMPOSE_CMD ps | grep -E "(healthy|running)" | wc -l | grep -q "2"; then
               echo "✅ Services are running"
               break
             fi
-            if [ \$i -eq 30 ]; then
+            if [ $i -eq 30 ]; then
               echo "❌ Health check timeout after 30 attempts"
               echo "📋 Container logs:"
-              \$COMPOSE_CMD logs
+              $COMPOSE_CMD logs
               exit 1
             fi
-            echo "   Attempt \$i/30 - waiting for services..."
+            echo "   Attempt $i/30 - waiting for services..."
             sleep 2
           done
           
@@ -97,13 +102,13 @@ jobs:
           echo "🔍 Testing deployment..."
           if curl -f http://localhost/health >/dev/null 2>&1; then
             echo "✅ Deployment successful!"
-            echo "🌐 API available at: http://\$(curl -s ifconfig.me 2>/dev/null || echo 'your-server-ip')"
+            echo "🌐 API available at: http://$(curl -s ifconfig.me 2>/dev/null || echo 'your-server-ip')"
             echo "📊 Final status:"
-            \$COMPOSE_CMD ps
+            $COMPOSE_CMD ps
           else
             echo "❌ Deployment failed - health check unsuccessful"
             echo "📋 Detailed logs:"
-            \$COMPOSE_CMD logs app
-            \$COMPOSE_CMD logs nginx
+            $COMPOSE_CMD logs app
+            $COMPOSE_CMD logs nginx
             exit 1
           fi
