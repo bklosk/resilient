@@ -5,7 +5,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    - run: tar -czf app.tar.gz --exclude='.git' --exclude='__pycache__' .
+    - run: tar -czf ../app.tar.gz --exclude='.git' --exclude='__pycache__' . && mv ../app.tar.gz .
     - uses: appleboy/scp-action@v0.1.7
       with:
         host: ${{ secrets.DO_DEV_SERVER_IP }}
