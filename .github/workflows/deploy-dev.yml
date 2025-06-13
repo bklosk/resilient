@@ -1,0 +1,21 @@
+name: Deploy to Dev Server
+on: { push: { branches: [main] } }
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - run: tar -czf app.tar.gz --exclude='.git' --exclude='__pycache__' .
+    - uses: appleboy/scp-action@v0.1.7
+      with:
+        host: ${{ secrets.DO_DEV_SERVER_IP }}
+        username: ${{ secrets.DO_DEV_SERVER_USER }}
+        password: ${{ secrets.DO_DEV_SERVER_PASS }}
+        source: app.tar.gz
+        target: /tmp/
+    - uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.DO_DEV_SERVER_IP }}
+        username: ${{ secrets.DO_DEV_SERVER_USER }}
+        password: ${{ secrets.DO_DEV_SERVER_PASS }}
+        script: cd /opt/photogrammetry||mkdir -p /opt/photogrammetry;cd /opt/photogrammetry;tar -xzf /tmp/app.tar.gz;python3 -m pip install -r requirements.txt --user;pkill -f "uvicorn app:app"||true;nohup python3 -m uvicorn app:app --host 0.0.0.0 --port 8000>/dev/null 2>&1&
