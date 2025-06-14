@@ -43,6 +43,10 @@ jobs:
             chmod +x /usr/local/bin/docker-compose
           fi
           
+          # Install network debugging tools
+          echo "📦 Installing network tools..."
+          apt-get update -qq && apt-get install -y -qq net-tools lsof psmisc curl >/dev/null 2>&1 || true
+          
           # Determine which compose command to use
           if docker compose version &> /dev/null; then
             echo "Using docker compose (v2)"
@@ -62,16 +66,56 @@ jobs:
           cd /opt/photogrammetry
           tar -xzf /tmp/app.tar.gz
           
-          # Stop existing containers
+          # Use dev-specific compose file for port 8080
+          cd deployment
+          
+          # Check for existing services on port 80
+          echo "🔍 Checking for services using port 80..."
+          if netstat -tuln 2>/dev/null | grep -q ':80 ' || ss -tuln 2>/dev/null | grep -q ':80 '; then
+            echo "⚠️ Port 80 is in use. Checking for existing containers..."
+            docker ps -a --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep -E "(80|caddy|nginx)" || true
+          fi
+          
+          # Stop existing containers more thoroughly
           echo "🛑 Stopping existing containers..."
-          $COMPOSE_CMD down 2>/dev/null || true
+          $COMPOSE_CMD -f docker-compose.dev.yml down --remove-orphans 2>/dev/null || true
+          $COMPOSE_CMD down --remove-orphans 2>/dev/null || true
+          
+          # Kill any containers that might be using port 80
+          echo "🧹 Cleaning up containers using port 80..."
+          docker ps -q --filter "expose=80" | xargs -r docker stop 2>/dev/null || true
+          docker ps -aq --filter "expose=80" | xargs -r docker rm 2>/dev/null || true
+          
+          # Additional cleanup for orphaned containers
+          docker container prune -f 2>/dev/null || true
           
           # Clean up old containers and images to save space
           docker system prune -f 2>/dev/null || true
           
           # Build and start containers
           echo "🔨 Building and starting containers..."
-          $COMPOSE_CMD up -d --build
+          
+          # Try to start with dev configuration (port 8080) first
+          echo "🔄 Starting with dev configuration (port 8080)..."
+          if $COMPOSE_CMD -f docker-compose.dev.yml up -d --build; then
+            echo "✅ Successfully started with dev configuration on port 8080"
+            DEPLOYMENT_PORT=8080
+          else
+            echo "⚠️ Dev configuration failed, trying to free port 80..."
+            # Final check that port 80 is free
+            if netstat -tuln 2>/dev/null | grep -q ':80 ' || ss -tuln 2>/dev/null | grep -q ':80 '; then
+              echo "❌ Port 80 is still in use after cleanup. Checking what's using it..."
+              netstat -tuln 2>/dev/null | grep ':80 ' || ss -tuln 2>/dev/null | grep ':80 ' || true
+              lsof -i :80 2>/dev/null || true
+              echo "Attempting to kill processes using port 80..."
+              fuser -k 80/tcp 2>/dev/null || true
+              sleep 2
+            fi
+            
+            echo "🔄 Trying with IP configuration (port 80)..."
+            $COMPOSE_CMD -f docker-compose.ip.yml up -d --build
+            DEPLOYMENT_PORT=80
+          fi
           
           # Wait for services to start
           echo "⏳ Waiting for services to start..."
@@ -91,8 +135,29 @@ jobs:
             if [ $i -eq 30 ]; then
               echo "❌ Health check timeout after 30 attempts"
               echo "📋 Container logs:"
-              $COMPOSE_CMD logs
-              exit 1
+              $COMPOSE_CMD logs app || true
+              $COMPOSE_CMD logs caddy || true
+              
+              # Try one more time with a clean restart
+              echo "🔄 Attempting clean restart..."
+              $COMPOSE_CMD down --remove-orphans || true
+              sleep 5
+              $COMPOSE_CMD up -d --build || exit 1
+              
+              # Wait again for restart
+              for j in {1..15}; do
+                if $COMPOSE_CMD ps | grep -E "(healthy|running)" | wc -l | grep -q "2"; then
+                  echo "✅ Services are running after restart"
+                  break
+                fi
+                if [ $j -eq 15 ]; then
+                  echo "❌ Final health check timeout"
+                  exit 1
+                fi
+                echo "   Restart attempt $j/15 - waiting for services..."
+                sleep 2
+              done
+              break
             fi
             echo "   Attempt $i/30 - waiting for services..."
             sleep 2
@@ -100,15 +165,16 @@ jobs:
           
           # Test the deployment
           echo "🔍 Testing deployment..."
-          if curl -f http://localhost:8080/health >/dev/null 2>&1; then
+          DEPLOYMENT_PORT=${DEPLOYMENT_PORT:-8080}
+          if curl -f http://localhost:${DEPLOYMENT_PORT}/health >/dev/null 2>&1; then
             echo "✅ Deployment successful!"
-            echo "🌐 API available at: http://$(curl -s ifconfig.me 2>/dev/null || echo 'your-server-ip'):8080"
+            echo "🌐 API available at: http://$(curl -s ifconfig.me 2>/dev/null || echo 'your-server-ip'):${DEPLOYMENT_PORT}"
             echo "📊 Final status:"
             $COMPOSE_CMD ps
           else
             echo "❌ Deployment failed - health check unsuccessful"
             echo "📋 Detailed logs:"
             $COMPOSE_CMD logs app
-            $COMPOSE_CMD logs nginx
+            $COMPOSE_CMD logs caddy
             exit 1
           fi

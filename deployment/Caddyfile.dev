@@ -1,0 +1,58 @@
+# Caddyfile for Development Environment
+# Uses HTTP only and port 8080 to avoid conflicts
+
+:80 {
+    # Reverse proxy to FastAPI application
+    reverse_proxy app:8000 {
+        # Health check configuration
+        health_uri /health/ready
+        health_interval 30s
+        health_timeout 10s
+        
+        # Request headers
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+    
+    # Enable file server for static content
+    file_server /static/* {
+        root /app/static
+        browse
+    }
+    
+    # CORS headers for development
+    header {
+        Access-Control-Allow-Origin *
+        Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+        Access-Control-Allow-Headers "Content-Type, Authorization, X-Requested-With"
+    }
+    
+    # Handle preflight requests
+    @options method OPTIONS
+    handle @options {
+        header Access-Control-Allow-Origin *
+        header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+        header Access-Control-Allow-Headers "Content-Type, Authorization, X-Requested-With"
+        respond 200
+    }
+    
+    # Request logging
+    log {
+        output file /var/log/caddy/access.log
+    }
+    
+    # Error handling
+    handle_errors {
+        @404 expression {http.error.status_code} == 404
+        handle @404 {
+            respond "API endpoint not found" 404
+        }
+        
+        @500 expression {http.error.status_code} >= 500
+        handle @500 {
+            respond "Internal server error" 500
+        }
+    }
+}
