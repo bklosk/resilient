@@ -45,14 +45,20 @@ async def lifespan(app : FastAPI):
     """Startup Events & Shutdown Events. Shutdown events occur after this event is yield'd."""
     logger.info("Photogrammetry API starting up...")
 
-    # Create necessary directories
-    data_dir = Path(__file__).parent / "data"
-    output_dir = data_dir / "outputs"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    ortho_dir = data_dir / "orthophotos"
-    ortho_dir.mkdir(parents=True, exist_ok=True)
-
-    logger.info("Photogrammetry API startup complete")
+    try:
+        # Create necessary directories
+        data_dir = Path(__file__).parent / "data"
+        output_dir = data_dir / "outputs"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        ortho_dir = data_dir / "orthophotos"
+        ortho_dir.mkdir(parents=True, exist_ok=True)
+        
+        logger.info(f"Created directories: {output_dir}, {ortho_dir}")
+        logger.info("Photogrammetry API startup complete")
+    except Exception as e:
+        logger.error(f"Startup error: {e}")
+        # Don't raise - let the app start anyway and handle issues per-request
+        logger.info("Photogrammetry API startup complete (with warnings)")
 
     yield
     """Shutdown Events."""

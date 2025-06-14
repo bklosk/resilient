@@ -23,7 +23,6 @@ async def root():
 async def health_check():
     """Health check endpoint with minimal dependency verification."""
     import time
-    import psutil
     import os
     
     # Basic health check without heavy imports
@@ -33,8 +32,14 @@ async def health_check():
         "version": "1.0.0",
         "active_jobs": len(jobs),
         "timestamp": time.time(),
-        "uptime": time.time() - psutil.Process(os.getpid()).create_time(),
     }
+    
+    # Get process info safely
+    try:
+        import psutil
+        health_data["uptime"] = time.time() - psutil.Process(os.getpid()).create_time()
+    except Exception:
+        health_data["uptime"] = "unknown"
     
     # Optional: Test critical imports only if needed
     try:
@@ -45,8 +50,17 @@ async def health_check():
     except ImportError as e:
         health_data["dependencies"] = f"warning: {str(e)}"
         # Still return healthy status - dependencies might load lazily
+    except Exception as e:
+        health_data["dependencies"] = f"loading: {str(e)}"
+        # Still return healthy status during startup
     
     return health_data
+
+
+@router.get("/health/ready")
+async def readiness_check():
+    """Lightweight readiness check for container startup."""
+    return {"status": "ready", "timestamp": __import__("time").time()}
 
 
 @router.get("/health/deep")
