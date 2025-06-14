@@ -1,12 +1,22 @@
-# Caddyfile for IP-based deployment (HTTP only)
+# Caddyfile for IP-based deployment with HTTPS support
 
+# HTTP to HTTPS redirect
 :80 {
+    # Redirect all HTTP traffic to HTTPS
+    redir https://{host}{uri} permanent
+}
+
+# HTTPS configuration
+:443 {
+    # Use self-signed certificate for IP-based deployment
+    tls internal
+    
     reverse_proxy app:8000 {
         health_uri /health/ready
         header_up Host {host}
         header_up X-Real-IP {remote_host}
         header_up X-Forwarded-For {remote_host}
-        header_up X-Forwarded-Proto http
+        header_up X-Forwarded-Proto https
     }
     
     header {
@@ -14,6 +24,7 @@
         X-Content-Type-Options nosniff
         X-Frame-Options DENY
         Referrer-Policy strict-origin-when-cross-origin
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
     }
     
     encode gzip
