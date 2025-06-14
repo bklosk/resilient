@@ -1,43 +1,36 @@
+# Alternative Dockerfile using Ubuntu base for better package availability
 # Multi-stage build for minimal production image
-# Stage 1: Build dependencies and compile packages
-FROM python:3.12-slim-bullseye AS builder
+FROM ubuntu:22.04 AS builder
 
-# Update package lists and install core dependencies first
+# Avoid interactive prompts during build
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install Python and system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.12 \
+    python3.12-dev \
+    python3.12-venv \
+    python3-pip \
+    build-essential \
+    pkg-config \
+    libgdal-dev \
+    libgeos-dev \
+    libproj-dev \
+    libspatialindex-dev \
+    libffi-dev \
+    libssl-dev \
+    libjpeg-dev \
+    libpng-dev \
+    libfreetype6-dev \
+    git \
     curl \
     ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install build dependencies in one layer with retry logic
-RUN apt-get update && \
-    (apt-get install -y --no-install-recommends \
-        build-essential \
-        pkg-config \
-        libgdal-dev \
-        libgeos-dev \
-        libproj-dev \
-        libspatialindex-dev \
-        libffi-dev \
-        libssl-dev \
-        libjpeg-dev \
-        libpng-dev \
-        libfreetype6-dev \
-        git \
-    || (apt-get update && apt-get install -y --fix-missing --no-install-recommends \
-        build-essential \
-        pkg-config \
-        libgdal-dev \
-        libgeos-dev \
-        libproj-dev \
-        libspatialindex-dev \
-        libffi-dev \
-        libssl-dev \
-        libjpeg-dev \
-        libpng-dev \
-        libfreetype6-dev \
-        git)) \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
+
+# Create symlinks for python and pip
+RUN ln -sf /usr/bin/python3.12 /usr/bin/python && \
+    ln -sf /usr/bin/python3.12 /usr/bin/python3
 
 # Set working directory
 WORKDIR /app
@@ -53,9 +46,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 RUN pip install --no-cache-dir --upgrade pip wheel setuptools
 
 # Install dependencies with optimizations
-RUN pip install --no-cache-dir \
-    --find-links https://download.pytorch.org/whl/cpu/torch_stable.html \
-    -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Clean up pip cache and temporary files to reduce layer size
 RUN pip cache purge && \
@@ -64,33 +55,31 @@ RUN pip cache purge && \
     find /opt/venv -type f -name "*.pyo" -delete
 
 # Stage 2: Runtime image - minimal production image
-FROM python:3.12-slim-bullseye AS runtime
+FROM ubuntu:22.04 AS runtime
 
-# Install only runtime dependencies in one layer with retry logic
-RUN apt-get update && \
-    (apt-get install -y --no-install-recommends \
-        curl \
-        ca-certificates \
-        libgdal28 \
-        libgeos-c1v5 \
-        libproj19 \
-        libspatialindex6 \
-        libjpeg62-turbo \
-        libpng16-16 \
-        libfreetype6 \
-    || apt-get install -y --fix-missing --no-install-recommends \
-        curl \
-        ca-certificates \
-        libgdal28 \
-        libgeos-c1v5 \
-        libproj19 \
-        libspatialindex6 \
-        libjpeg62-turbo \
-        libpng16-16 \
-        libfreetype6) \
+# Avoid interactive prompts during build
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install only runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.12 \
+    python3.12-venv \
+    curl \
+    ca-certificates \
+    libgdal30 \
+    libgeos-c1v5 \
+    libproj22 \
+    libspatialindex6 \
+    libjpeg-turbo8 \
+    libpng16-16 \
+    libfreetype6 \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean \
     && apt-get autoremove -y
+
+# Create symlinks for python
+RUN ln -sf /usr/bin/python3.12 /usr/bin/python && \
+    ln -sf /usr/bin/python3.12 /usr/bin/python3
 
 # Create non-root user for security
 RUN groupadd -g 1000 appgroup && \
@@ -99,7 +88,7 @@ RUN groupadd -g 1000 appgroup && \
 # Set working directory
 WORKDIR /app
 
-# Copy virtual environment from builder stage (this is the key optimization)
+# Copy virtual environment from builder stage
 COPY --from=builder /opt/venv /opt/venv
 
 # Ensure we use the virtual environment
