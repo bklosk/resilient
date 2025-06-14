@@ -1,191 +1,86 @@
-## Climate Resilience as a product 🌍
 
-This project utilizes **LiDAR** data 🛰️ and **orthophotos** 📸 to create 3D models of environments. The primary goal is to identify and analyze features that can be modified to mitigate climate-related risks such as flooding, heat islands, or wildfire spread.
+🌍 Climate Resilience Intelligence
 
-## The Goal 🎯
+This repo contains code that processes geographic data, identifies vulnerabilities to climate risks, and recommends improvements.
 
-Our aim is to pinpoint specific areas or objects within a 3D environment (e.g., vegetation, buildings, infrastructure) that can be modified or managed to reduce climate-related risks.
+🎯 What We’re Solving
 
-For example, we could:
-*   Identify vegetation likely to be a vector for fire spread to buildings.
-*   Find optimal placements for floodwalls or other flood mitigation measures.
-*   Detect rooftops suitable for green roofs 🌿 or solar panel installations ☀️.
-*   Assess infrastructure vulnerabilities that need reinforcement.
+We use technology to:
+	•	Identify vegetation near buildings that might spread wildfires.
+	•	Spot ideal locations for flood barriers.
+	•	Recommend rooftops for solar panels or green roofs.
+	•	Suggest infrastructure improvements to withstand extreme weather.
 
-## Technologies 🛠️
+🛠️ Tech Stack
 
-*   **FastAPI:** For building the web API that serves as the main interface to the system.
-*   **Uvicorn:** As the ASGI server for running the FastAPI application.
-*   **LiDAR:** For creating accurate 3D point clouds of the environment.
-*   **Orthophotos:** Georeferenced aerial imagery providing color and texture information.
-*   **Pytest:** For running automated tests.
+Here’s what we’re using and why:
+	•	FastAPI: Easy, fast web API framework in Python.
+	•	LiDAR: Laser-based elevation data for detailed terrain mapping.
+	•	Orthophotos: High-quality aerial images for visual accuracy.
+	•	WRTC / HAZUS: High-quality climate risk data from the US Government
 
-## Codebase Organization 📂
+📂 Repo Structure
 
-The project is structured to separate concerns and make navigation and development easier:
+Here’s what’s in the repository:
+	•	app.py: Entry point for the FastAPI app. Starts everything up.
+	•	routers/: Routes requests coming from users.
+	•	jobs.py: Manages tasks in the background.
+	•	analysis.py: Runs climate vulnerability analysis.
+	•	services/: Handles the heavy lifting.
+	•	core/: Processes 3D point cloud data.
+	•	data/: Fetches LiDAR and orthophoto data.
+	•	processing/: Crunches data into usable formats.
+	•	utils/: Handy utility functions used throughout the project.
+	•	tests/: Tests to make sure everything runs smoothly.
+	•	data/: Stores all data files.
+	•	outputs/: Finished models and processed data.
+	•	orthophotos/: Raw aerial images.
+	•	deployment/: Docker files for easy deployment.
+	•	requirements.txt: All Python libraries needed.
+	•	README.md: This file!
 
-*   **`app.py`**: The main entry point for the FastAPI application. It initializes the app, mounts routers, and defines background task processing.
-*   **`routers/`**: Contains API endpoint definitions. Each file typically groups related endpoints (e.g., `jobs.py` for job status and download, `analysis.py` for analysis tasks).
-    *   `health.py`: Basic health check endpoint.
-    *   `jobs.py`: Endpoints for initiating processing, checking job status, and downloading results.
-    *   `images.py`: Endpoints related to orthophoto retrieval.
-    *   `analysis.py`: Endpoints for more specific analyses (e.g., flood risk - conceptual).
-    *   `shared.py`: Utility functions or models shared across routers.
-*   **`services/`**: Core logic and business operations. This is where the heavy lifting happens.
-    *   `core/`: Essential services like geocoding (`geocode.py`) and point cloud processing/colorization (`process_point_cloud.py`).
-    *   `data/`: Modules for fetching external data, such as LiDAR point clouds (`get_point_cloud.py`), orthophotos (`get_orthophoto.py`), and potentially other datasets like FEMA flood maps (`get_fema_risk.py`).
-    *   `processing/`: Modules for more advanced data manipulation, such as point cloud I/O, orthophoto I/O, and potentially future analysis steps.
-    *   `utils/`: Utility functions and classes used across different services (e.g., bounding box calculations, file handling, CRS transformations in `utils.py`, flood depth analysis in `flood_depth.py`).
-    *   `visualization/`: Services related to generating reports or visual outputs (e.g., `summary_reporter.py`).
-    *   `ai/`: (Likely for future AI/ML model integration for semantic segmentation or other analyses).
-*   **`tests/`**: Contains all automated tests. The structure mirrors the main codebase (e.g., `test_api.py` for API tests, `test_core_services.py` for core service tests).
-    *   `conftest.py`: Pytest fixtures and configuration.
-    *   `test_dev_server.py`: Integration tests that run against a live (but locally stubbed) version of the FastAPI application.
-*   **`data/`**: Directory for storing persistent data.
-    *   `outputs/`: Default location for processed files (e.g., colorized point clouds).
-    *   `orthophotos/`: Storage for downloaded orthophotos.
-    *   `hazus/`, `spatial_index.json`: Related to specific data sources or indexing.
-*   **`deployment/`**: Docker deployment configuration.
-    *   `nginx.conf`: Nginx reverse proxy configuration.
-    *   `ssl/`: SSL certificates directory.
-*   **`requirements.txt`**: Lists Python dependencies for the project.
-*   **`README.md`**: This file! Provides an overview of the project.
+🚀 How the App Works
 
-## Workflow Overview 🗺️
+Here’s the typical workflow:
+	1.	A user submits an address via our API.
+	2.	The app creates a new job.
+	3.	It finds the geographic coordinates for the address.
+	4.	It gathers LiDAR and aerial images for the location.
+	5.	Processes that data to create a detailed 3D model.
+	6.	Saves the model to storage.
+	7.	The user can then download the finished 3D model.
 
-The current primary workflow involves the following steps, orchestrated via the FastAPI application:
+We’re continually enhancing this process, like adding smarter analysis powered by AI models.
 
-1.  **API Request:** A user (or another service) sends a request to the `/process` endpoint, typically providing an address.
-    ```
-    POST /process
-    {
-      "address": "123 Main St"
-    }
-    ```
-2.  **Job Creation:** The application creates a unique job ID and initiates a background task.
-3.  **Geocoding:** The address is geocoded to obtain latitude and longitude coordinates (see `services.core.geocode.Geocoder`).
-4.  **Data Acquisition (Conceptual/Stubbed in tests):**
-    *   A bounding box is generated around the coordinates.
-    *   Relevant LiDAR data and orthophotos are identified and fetched (see `services.data.get_point_cloud.PointCloudDatasetFinder` and `services.data.get_orthophoto.NAIPFetcher`).
-5.  **Point Cloud Processing & Colorization:**
-    *   The LiDAR point cloud is processed.
-    *   If orthophotos are available, the point cloud is colorized using the imagery (see `services.core.process_point_cloud.PointCloudProcessor`).
-6.  **Output Storage:** The resulting processed file (e.g., a `.laz` file) is saved to the `data/outputs/` directory, named with the job ID.
-7.  **Job Status Update:** The job status is updated to "completed," and the path to the output file is recorded.
-8.  **Result Retrieval:** The user can poll the `/job/{job_id}` endpoint to check the status and, once completed, download the output file using the `/download/{job_id}` endpoint.
+🛠️ How to Run the App (Setup)
 
-```
-[User Request (Address) 📬] --> [API (/process)] --> [Background Job ⚙️] --> [Geocoding 🌍] --> [Data Fetching (LiDAR 🛰️, Orthophoto 📸)] --> [Point Cloud Colorization 🎨] --> [Output Saved 💾] --> [User Downloads Result 📥]
-```
+Follow these steps to get the app running locally:
 
-Future enhancements may include 3D semantic segmentation, physics-based simulations, and more detailed risk analysis.
+Prerequisites:
+	•	Python 3.10+
+	•	Git
 
-## Project Setup and Execution
+Steps:
+	1.	Clone this repo:
 
-### Prerequisites
+git clone <repository-url>
+cd photogrammetry
 
-- Python 3.10 or higher
-- Git
+	2.	Create and activate a Python virtual environment:
 
-### Setup
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-1.  **Clone the repository:**
-    ```bash
-    git clone <repository-url>
-    cd photogrammetry
-    ```
+	3.	Install dependencies:
 
-2.  **Create and activate a Python virtual environment:**
-    ```bash
-    python3 -m venv venv
-    source venv/bin/activate  # On Windows: venv\Scripts\activate
-    ```
+pip install -r requirements.txt
 
-3.  **Install Python dependencies:**
-    ```bash
-    pip install -r requirements.txt
-    ```
+	4.	Start the application:
 
-### Running the Application 🚀
+uvicorn app:app --reload
 
-The application is a FastAPI web server.
+Visit http://127.0.0.1:8000 to use the API.
 
-1.  **Ensure your virtual environment is activated.** ✅
-2.  **Start the FastAPI application:**
-    ```bash
-    python app.py
-    ```
-    This starts the Uvicorn server, typically on `http://localhost:8000`. The server will automatically reload on code changes in key directories.
+⸻
 
-    Alternatively, run with Uvicorn directly for more control:
-    ```bash
-    uvicorn app:app --host 0.0.0.0 --port 8000 --reload --reload-dirs ./services,./routers
-    ```
-
-3.  **Access the API:**
-    *   **API Documentation (Swagger UI):** [http://localhost:8000/docs](http://localhost:8000/docs)
-    *   **Health Check:** [http://localhost:8000/health](http://localhost:8000/health)
-
-### Running Tests 🧪
-
-The project uses `pytest` for testing.
-
-1.  **Ensure your virtual environment is activated.** ✅
-2.  **Run all tests:**
-    ```bash
-    pytest
-    ```
-    This command discovers and runs all tests in the `tests/` directory.
-    The test suite includes:
-    *   Unit tests for individual modules and functions.
-    *   Integration tests for service interactions.
-    *   API tests that interact with the FastAPI endpoints (using `requests`).
-    *   Development server tests (`tests/test_dev_server.py`) which run the application with stubbed external dependencies to test the overall flow.
-
-3.  **Run specific test files or tests:**
-    ```bash
-    pytest tests/test_api.py  # Run a specific file
-    pytest -k "test_process_flow"  # Run tests with names containing "test_process_flow"
-    ```
-    As per your instructions, regression tests using `test_dev_server.py` are included in the default `pytest` run.
-
-## Deployment 🚀
-
-### Docker-based Deployment
-
-The application uses Docker for simple, consistent deployment across environments.
-
-**Local Development:**
-```bash
-docker-compose up -d
-```
-
-**Production:** Automatically deployed via GitHub Actions to DigitalOcean when pushing to `main` branch.
-
-**Architecture:**
-- **Docker Container:** FastAPI application runs in isolated container
-- **Nginx Reverse Proxy:** Handles HTTP/HTTPS and proxies to application
-- **Automatic Scaling:** Docker handles process management and restarts
-- **Health Monitoring:** Built-in health checks for both services
-
-**Features:**
-- ✅ **Simple Setup:** Single `docker-compose up` command
-- ✅ **Isolated Environment:** No dependency conflicts
-- ✅ **Automatic Restarts:** Containers restart on failure
-- ✅ **Easy SSL:** Drop certificates in `deployment/ssl/` and restart
-- ✅ **Scalable:** Easy to add more containers or services
-
-**Deployment Files:**
-- `Dockerfile` - Application container definition
-- `docker-compose.yml` - Multi-service orchestration
-- `deployment/nginx.conf` - Reverse proxy configuration
-- `deployment/ssl/` - SSL certificates directory
-
-**Monitoring:**
-```bash
-docker-compose ps              # Check container status
-docker-compose logs -f app     # View application logs
-docker-compose logs -f nginx   # View nginx logs
-```
-
----
+Changing the world, one home at a time 🌍✨

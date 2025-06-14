@@ -1,0 +1,56 @@
+name: Deploy to DigitalOcean
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Validate configurations
+      run: |
+        docker-compose config > /dev/null
+        SERVER_IP=192.168.1.100 docker-compose -f deployment/docker-compose.ip.yml config > /dev/null
+        echo "✅ Configurations validated"
+      
+    - name: Deploy to DigitalOcean
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.DO_DEV_SERVER_IP }}
+        username: ${{ secrets.DO_DEV_SERVER_USER }}
+        password: ${{ secrets.DO_DEV_SERVER_PASS }}
+        script: |
+          cd /opt/photogrammetry || { echo "❌ Project directory not found"; exit 1; }
+          
+          echo "📥 Updating code..."
+          git pull origin main
+          
+          echo "🚀 Deploying application..."
+          SERVER_IP="${{ secrets.DO_DEV_SERVER_IP }}"
+          
+          # Clean shutdown
+          docker-compose down --remove-orphans 2>/dev/null || true
+          
+          # Deploy
+          SERVER_IP="$SERVER_IP" docker-compose -f deployment/docker-compose.ip.yml up -d --build
+          
+          # Verify deployment
+          echo "🧪 Verifying deployment..."
+          for i in {1..6}; do
+            if curl -f http://$SERVER_IP/health/ready > /dev/null 2>&1; then
+              echo "✅ Deployment successful! Available at: http://$SERVER_IP"
+              docker image prune -f > /dev/null 2>&1 || true
+              exit 0
+            fi
+            sleep 10
+          done
+          
+          echo "❌ Deployment failed"
+          SERVER_IP="$SERVER_IP" docker-compose -f deployment/docker-compose.ip.yml logs app
+          exit 1

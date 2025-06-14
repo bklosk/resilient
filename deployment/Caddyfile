@@ -1,0 +1,122 @@
+# Caddyfile for FastAPI Photogrammetry Application
+# Supports both domain-based HTTPS and IP-based HTTP deployment
+
+# Configuration for domain-based deployment with automatic HTTPS
+{$DOMAIN} {
+    # Skip automatic HTTPS if DOMAIN is an IP address
+    # Caddy will automatically detect this and serve HTTP only
+    
+    # Reverse proxy to FastAPI application
+    reverse_proxy app:8000 {
+        # Health check configuration
+        health_uri /health/ready
+        health_interval 30s
+        health_timeout 10s
+        
+        # Request headers
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+    
+    # Security headers
+    header {
+        # Remove server identification
+        -Server
+        
+        # Security headers
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        X-XSS-Protection "1; mode=block"
+        Referrer-Policy strict-origin-when-cross-origin
+        
+        # Only apply HSTS for HTTPS connections
+        ?Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    }
+    
+    # Enable compression
+    encode gzip
+    
+    # Request logging
+    log {
+        output file /var/log/caddy/access.log
+        format json
+    }
+    
+    # Handle large file uploads (for point cloud data)
+    request_body {
+        max_size 500MB
+    }
+}
+
+# Fallback configuration for IP-only deployment
+# This handles requests when no domain is set or for direct IP access
+:80 {
+    # Only activate this block if DOMAIN is not set or is an IP
+    @ip_access {
+        header_regexp Host ^(\d+\.){3}\d+(:\d+)?$
+    }
+    
+    handle @ip_access {
+        # Reverse proxy to FastAPI application
+        reverse_proxy app:8000 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto http
+        }
+        
+        # Security headers (no HSTS for HTTP)
+        header {
+            -Server
+            X-Content-Type-Options nosniff
+            X-Frame-Options DENY
+            X-XSS-Protection "1; mode=block"
+            Referrer-Policy strict-origin-when-cross-origin
+        }
+        
+        encode gzip
+        
+        log {
+            output file /var/log/caddy/access.log
+            format json
+        }
+        
+        request_body {
+            max_size 500MB
+        }
+    }
+    
+    # Handle all other requests (fallback)
+    handle {
+        reverse_proxy app:8000 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto http
+        }
+        
+        header {
+            -Server
+            X-Content-Type-Options nosniff
+            X-Frame-Options DENY
+            X-XSS-Protection "1; mode=block"
+            Referrer-Policy strict-origin-when-cross-origin
+        }
+        
+        encode gzip
+        log {
+            output file /var/log/caddy/access.log
+            format json
+        }
+        request_body {
+            max_size 500MB
+        }
+    }
+}
+
+# Health check endpoint for the reverse proxy itself
+:2019 {
+    respond /health "OK" 200
+}
