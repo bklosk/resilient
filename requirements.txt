@@ -20,3 +20,5 @@ pystac
 shapely
 rio-tiler
 psutil>=5.9.0
+geopandas
+fiona
