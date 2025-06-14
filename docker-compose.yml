@@ -1,7 +1,7 @@
 services:
   app:
     build: .
-    container_name: photogrammetry-api
+    container_name: resilience-api
     restart: unless-stopped
     volumes:
       - ./data:/app/data
@@ -12,8 +12,8 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 15s
-      retries: 5
-      start_period: 60s
+      retries: 10
+      start_period: 120s
 
   nginx:
     image: nginx:alpine
