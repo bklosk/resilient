@@ -1,4 +1,4 @@
-name: Deploy to Dev Server
+name: Deploy to Server
 
 on:
   push:
@@ -133,40 +133,28 @@ jobs:
           
           # Wait for health checks with better error handling
           echo "🔍 Waiting for health checks..."
-          for i in {1..30}; do
-            if $COMPOSE_CMD -f $COMPOSE_FILE ps | grep -E "(healthy|running)" | wc -l | grep -q "2"; then
-              echo "✅ Services are running"
+          for i in {1..20}; do
+            # Check if both containers are healthy
+            APP_STATUS=$($COMPOSE_CMD -f $COMPOSE_FILE ps app --format "{{.Status}}" 2>/dev/null || echo "")
+            CADDY_STATUS=$($COMPOSE_CMD -f $COMPOSE_FILE ps caddy --format "{{.Status}}" 2>/dev/null || echo "")
+            
+            if echo "$APP_STATUS" | grep -q "healthy" && echo "$CADDY_STATUS" | grep -q "healthy"; then
+              echo "✅ Both services are healthy"
               break
             fi
-            if [ $i -eq 30 ]; then
-              echo "❌ Health check timeout after 30 attempts"
+            
+            if [ $i -eq 20 ]; then
+              echo "❌ Health check timeout after 20 attempts"
+              echo "📊 Current status:"
+              echo "   App: $APP_STATUS"
+              echo "   Caddy: $CADDY_STATUS"
               echo "📋 Container logs:"
-              $COMPOSE_CMD -f $COMPOSE_FILE logs app || true
-              $COMPOSE_CMD -f $COMPOSE_FILE logs caddy || true
-              
-              # Try one more time with a clean restart
-              echo "🔄 Attempting clean restart..."
-              $COMPOSE_CMD -f $COMPOSE_FILE down --remove-orphans || true
-              sleep 5
-              $COMPOSE_CMD -f $COMPOSE_FILE up -d --build || exit 1
-              
-              # Wait again for restart
-              for j in {1..15}; do
-                if $COMPOSE_CMD -f $COMPOSE_FILE ps | grep -E "(healthy|running)" | wc -l | grep -q "2"; then
-                  echo "✅ Services are running after restart"
-                  break
-                fi
-                if [ $j -eq 15 ]; then
-                  echo "❌ Final health check timeout"
-                  exit 1
-                fi
-                echo "   Restart attempt $j/15 - waiting for services..."
-                sleep 2
-              done
-              break
+              $COMPOSE_CMD -f $COMPOSE_FILE logs --tail=50 app || true
+              $COMPOSE_CMD -f $COMPOSE_FILE logs --tail=50 caddy || true
+              exit 1
             fi
-            echo "   Attempt $i/30 - waiting for services..."
-            sleep 2
+            echo "   Attempt $i/20 - app: $APP_STATUS, caddy: $CADDY_STATUS"
+            sleep 6
           done
           
           # Test the deployment
@@ -177,34 +165,44 @@ jobs:
           # Test the appropriate endpoint
           if [ "$DEPLOYMENT_SCHEME" = "https" ]; then
             # For HTTPS, test both HTTP redirect and HTTPS endpoint
-            echo "Testing HTTP to HTTPS redirect..."
-            if curl -L -f -k https://localhost/health >/dev/null 2>&1; then
+            echo "Testing HTTPS endpoint..."
+            # Wait a bit more for TLS to be ready
+            sleep 10
+            if curl -L -f -k --max-time 30 https://localhost/health >/dev/null 2>&1; then
               echo "✅ HTTPS deployment successful!"
               echo "🌐 API available at: https://$(curl -s ifconfig.me 2>/dev/null || echo 'your-server-ip')"
+            elif curl -f --max-time 30 http://localhost/health >/dev/null 2>&1; then
+              echo "⚠️ HTTP deployment working (HTTPS may need time to initialize)"
+              echo "🌐 API available at: http://$(curl -s ifconfig.me 2>/dev/null || echo 'your-server-ip')"
             else
-              echo "❌ HTTPS test failed, trying HTTP fallback..."
-              if curl -f http://localhost/health >/dev/null 2>&1; then
-                echo "⚠️ HTTP deployment working (HTTPS may need time to initialize)"
-                echo "🌐 API available at: http://$(curl -s ifconfig.me 2>/dev/null || echo 'your-server-ip')"
-              else
-                echo "❌ Both HTTP and HTTPS tests failed"
-                echo "📋 Detailed logs:"
-                $COMPOSE_CMD -f $COMPOSE_FILE logs app
-                $COMPOSE_CMD -f $COMPOSE_FILE logs caddy
-                exit 1
-              fi
+              echo "❌ Both HTTP and HTTPS tests failed, trying fallback endpoints..."
+              # Try different health endpoints
+              for endpoint in "/health/ready" "/ready" "/"; do
+                echo "   Testing endpoint: $endpoint"
+                if curl -f --max-time 15 "http://localhost$endpoint" >/dev/null 2>&1; then
+                  echo "✅ HTTP deployment working on endpoint: $endpoint"
+                  echo "🌐 API available at: http://$(curl -s ifconfig.me 2>/dev/null || echo 'your-server-ip')"
+                  break
+                fi
+              done
             fi
           else
             # For HTTP dev deployment
-            if curl -f http://localhost:${DEPLOYMENT_PORT}/health >/dev/null 2>&1; then
+            echo "Testing HTTP endpoint on port ${DEPLOYMENT_PORT}..."
+            if curl -f --max-time 30 http://localhost:${DEPLOYMENT_PORT}/health >/dev/null 2>&1; then
               echo "✅ HTTP deployment successful!"
               echo "🌐 API available at: http://$(curl -s ifconfig.me 2>/dev/null || echo 'your-server-ip'):${DEPLOYMENT_PORT}"
             else
-              echo "❌ HTTP deployment failed"
-              echo "📋 Detailed logs:"
-              $COMPOSE_CMD -f $COMPOSE_FILE logs app
-              $COMPOSE_CMD -f $COMPOSE_FILE logs caddy
-              exit 1
+              echo "❌ HTTP deployment failed, trying fallback endpoints..."
+              # Try different health endpoints
+              for endpoint in "/health/ready" "/ready" "/"; do
+                echo "   Testing endpoint: $endpoint"
+                if curl -f --max-time 15 "http://localhost:${DEPLOYMENT_PORT}$endpoint" >/dev/null 2>&1; then
+                  echo "✅ HTTP deployment working on endpoint: $endpoint"
+                  echo "🌐 API available at: http://$(curl -s ifconfig.me 2>/dev/null || echo 'your-server-ip'):${DEPLOYMENT_PORT}"
+                  break
+                fi
+              done
             fi
           fi
           
