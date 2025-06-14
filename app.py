@@ -49,11 +49,21 @@ async def lifespan(app : FastAPI):
         # Create necessary directories
         data_dir = Path(__file__).parent / "data"
         output_dir = data_dir / "outputs"
-        output_dir.mkdir(parents=True, exist_ok=True)
         ortho_dir = data_dir / "orthophotos"
-        ortho_dir.mkdir(parents=True, exist_ok=True)
         
-        logger.info(f"Created directories: {output_dir}, {ortho_dir}")
+        # Try to create directories, but don't fail if permissions are wrong
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Created output directory: {output_dir}")
+        except PermissionError:
+            logger.warning(f"Cannot create {output_dir} - using volume mount")
+            
+        try:
+            ortho_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Created ortho directory: {ortho_dir}")
+        except PermissionError:
+            logger.warning(f"Cannot create {ortho_dir} - using volume mount")
+        
         logger.info("Photogrammetry API startup complete")
     except Exception as e:
         logger.error(f"Startup error: {e}")
