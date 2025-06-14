@@ -102,20 +102,46 @@ jobs:
           # Build and start containers
           echo "🔨 Building and starting containers..."
           
+          # Check port availability first
+          echo "🔍 Checking port availability..."
+          if netstat -tuln 2>/dev/null | grep -q ':80 ' || ss -tuln 2>/dev/null | grep -q ':80 '; then
+            echo "⚠️ Port 80 is in use. Will try to stop conflicting services."
+            # Try to stop common web servers
+            systemctl stop nginx 2>/dev/null || true
+            systemctl stop apache2 2>/dev/null || true
+            # Kill any processes using port 80
+            fuser -k 80/tcp 2>/dev/null || true
+            sleep 5
+          fi
+          
+          if netstat -tuln 2>/dev/null | grep -q ':443 ' || ss -tuln 2>/dev/null | grep -q ':443 '; then
+            echo "⚠️ Port 443 is in use. Will try to stop conflicting services."
+            fuser -k 443/tcp 2>/dev/null || true
+            sleep 5
+          fi
+          
           # Use IP configuration for standard HTTPS deployment (ports 80/443)
           echo "🔄 Starting with production configuration (ports 80/443)..."
-          if $COMPOSE_CMD -f docker-compose.ip.yml up -d --build; then
+          if $COMPOSE_CMD -f docker-compose.ip.yml up -d --build 2>&1 | tee /tmp/compose_output.log; then
             echo "✅ Successfully started with production configuration on standard ports"
             DEPLOYMENT_PORT=80
             DEPLOYMENT_SCHEME=https
             COMPOSE_FILE="docker-compose.ip.yml"
           else
-            echo "⚠️ Production configuration failed, trying dev configuration..."
+            echo "❌ Production configuration failed. Error details:"
+            cat /tmp/compose_output.log | tail -20
+            echo "⚠️ Trying dev configuration..."
             echo "🔄 Starting with dev configuration (port 8080)..."
-            $COMPOSE_CMD -f docker-compose.dev.yml up -d --build
-            DEPLOYMENT_PORT=8080
-            DEPLOYMENT_SCHEME=http
-            COMPOSE_FILE="docker-compose.dev.yml"
+            if $COMPOSE_CMD -f docker-compose.dev.yml up -d --build; then
+              echo "✅ Dev configuration started successfully"
+              DEPLOYMENT_PORT=8080
+              DEPLOYMENT_SCHEME=http
+              COMPOSE_FILE="docker-compose.dev.yml"
+            else
+              echo "❌ Both configurations failed!"
+              $COMPOSE_CMD -f docker-compose.dev.yml logs --tail=50 || true
+              exit 1
+            fi
           fi
           
           # Wait for services to start

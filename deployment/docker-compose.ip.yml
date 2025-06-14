@@ -29,15 +29,18 @@ services:
       - ./Caddyfile.ip:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+      - ../logs:/var/log/caddy  # Mount logs directory
+    environment:
+      - CADDY_LOG_LEVEL=DEBUG  # Enable debug logging
     networks:
       - caddy_network
     depends_on:
       app:
         condition: service_healthy
-    # Install curl for healthcheck
+    # Install curl for healthcheck and enable debug logging
     command: sh -c "apk add --no-cache curl && caddy run --config /etc/caddy/Caddyfile --adapter caddyfile"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      test: ["CMD", "sh", "-c", "curl -f http://localhost:80/health || curl -f -k https://localhost:443/health"]
       interval: 30s
       timeout: 10s
       retries: 3
