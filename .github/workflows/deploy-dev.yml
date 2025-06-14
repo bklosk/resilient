@@ -100,9 +100,9 @@ jobs:
           
           # Test the deployment
           echo "🔍 Testing deployment..."
-          if curl -f http://localhost/health >/dev/null 2>&1; then
+          if curl -f http://localhost:8080/health >/dev/null 2>&1; then
             echo "✅ Deployment successful!"
-            echo "🌐 API available at: http://$(curl -s ifconfig.me 2>/dev/null || echo 'your-server-ip')"
+            echo "🌐 API available at: http://$(curl -s ifconfig.me 2>/dev/null || echo 'your-server-ip'):8080"
             echo "📊 Final status:"
             $COMPOSE_CMD ps
           else
