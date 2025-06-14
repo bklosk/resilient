@@ -1,11 +1,11 @@
 #!/bin/bash
 
-echo "🚀 Deploying climateriskplan.com with HTTPS"
-echo "============================================"
+echo "🚀 Deploying api.climateriskplan.com with HTTPS"
+echo "==============================================="
 
 # Check if domain points to this server
-echo "🔍 Checking DNS resolution for climateriskplan.com..."
-DOMAIN_IP=$(dig +short climateriskplan.com)
+echo "🔍 Checking DNS resolution for api.climateriskplan.com..."
+DOMAIN_IP=$(dig +short api.climateriskplan.com)
 SERVER_IP=$(curl -s https://ipinfo.io/ip)
 
 echo "Domain resolves to: $DOMAIN_IP"
@@ -13,7 +13,7 @@ echo "Server IP is: $SERVER_IP"
 
 if [ "$DOMAIN_IP" != "$SERVER_IP" ]; then
     echo "⚠️  WARNING: Domain doesn't point to this server!"
-    echo "   Make sure climateriskplan.com A record points to $SERVER_IP"
+    echo "   Make sure api.climateriskplan.com A record points to $SERVER_IP"
     echo "   Let's Encrypt certificate will fail if DNS is incorrect"
     echo
     read -p "Continue anyway? (y/N): " -n 1 -r
@@ -55,8 +55,8 @@ echo
 echo "✅ Deployment completed!"
 echo
 echo "🌐 Your app should be available at:"
-echo "   https://climateriskplan.com"
-echo "   http://climateriskplan.com (will redirect to HTTPS)"
+echo "   https://api.climateriskplan.com"
+echo "   http://api.climateriskplan.com (will redirect to HTTPS)"
 echo
 echo "🔧 To view logs:"
 echo "   docker compose -f docker-compose.domain.yml logs -f"
