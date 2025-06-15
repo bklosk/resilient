@@ -2,13 +2,18 @@
 
 This directory contains the simplified deployment configuration for the Photogrammetry API.
 
+## Current Status (June 15, 2025)
+✅ **HTTP API**: Working at http://api.climateriskplan.com  
+❌ **HTTPS**: Certificate issues detected  
+✅ **Backend**: API responding normally  
+✅ **DNS**: Domain resolving correctly  
+
 ## Files
 
 - `Caddyfile.production` - Production Caddy configuration for api.climateriskplan.com
-- `docker-compose.production.yml` - Production Docker Compose configuration
+- `docker-compose.production.yml` - Production Docker Compose configuration  
 - `deploy.sh` - Main deployment script
 - `diagnose.sh` - HTTPS troubleshooting script
-- `backup/` - Backup of old deployment files
 
 ## Quick Start
 
@@ -22,14 +27,19 @@ This directory contains the simplified deployment configuration for the Photogra
    ./diagnose.sh
    ```
 
-3. **View logs:**
+3. **Fix HTTPS certificate:**
    ```bash
-   docker compose -f docker-compose.production.yml logs -f
+   # Restart Caddy to regenerate certificates
+   docker compose -f docker-compose.production.yml restart caddy
+   
+   # Or full restart if needed
+   docker compose -f docker-compose.production.yml down
+   docker compose -f docker-compose.production.yml up -d
    ```
 
-4. **Stop deployment:**
+4. **View logs:**
    ```bash
-   docker compose -f docker-compose.production.yml down
+   docker compose -f docker-compose.production.yml logs -f caddy
    ```
 
 ## Requirements
