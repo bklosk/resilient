@@ -1,0 +1,64 @@
+# Caddyfile for IP-based deployment with HTTPS fallback
+
+# HTTPS configuration with self-signed certificate
+:443 {
+    tls internal
+    
+    reverse_proxy app:8000 {
+        health_uri /health/ready
+        health_interval 30s
+        health_timeout 10s
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto https
+    }
+    
+    header {
+        -Server
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        Referrer-Policy strict-origin-when-cross-origin
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    }
+    
+    encode gzip
+    request_body {
+        max_size 500MB
+    }
+    
+    log {
+        output file /var/log/caddy/https-access.log
+        format json
+    }
+}
+
+# HTTP configuration - serve content AND redirect
+:80 {
+    reverse_proxy app:8000 {
+        health_uri /health/ready
+        health_interval 30s
+        health_timeout 10s
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto http
+    }
+    
+    header {
+        -Server
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        Referrer-Policy strict-origin-when-cross-origin
+    }
+    
+    encode gzip
+    request_body {
+        max_size 500MB
+    }
+    
+    log {
+        output file /var/log/caddy/http-access.log
+        format json
+    }
+}

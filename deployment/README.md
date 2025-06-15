@@ -3,21 +3,34 @@
 Clean deployment configuration for the Photogrammetry API at `api.climateriskplan.com`.
 
 ## Status
-✅ **Production**: Working at https://api.climateriskplan.com  
-✅ **HTTP**: Working at http://api.climateriskplan.com  
-✅ **SSL**: Let's Encrypt certificates active  
-✅ **Health**: API responding normally  
+⚠️ **HTTPS**: May need recovery after cleanup  
+✅ **HTTP**: Should be working  
+⚠️ **SSL**: May need certificate regeneration  
+
+## Emergency Recovery
+If HTTPS stopped working after cleanup:
+```bash
+./emergency-fix.sh
+```
 
 ## Files
 
 - `docker-compose.production.yml` - Production deployment configuration
-- `Caddyfile.production` - Caddy reverse proxy with automatic HTTPS
+- `docker-compose.ip.yml` - IP-based fallback deployment
+- `Caddyfile.production` - Production Caddy with automatic HTTPS
+- `Caddyfile.ip` - IP-based Caddy with self-signed certificates
 - `deploy.sh` - Main deployment script
 - `diagnose.sh` - Diagnostic and troubleshooting tool
+- `emergency-fix.sh` - Emergency recovery script
 
 ## Usage
 
-### Deploy
+### Emergency Fix (if HTTPS broken)
+```bash
+./emergency-fix.sh
+```
+
+### Normal Deploy
 ```bash
 ./deploy.sh
 ```
@@ -50,10 +63,11 @@ docker compose -f docker-compose.production.yml down
 
 ## Troubleshooting
 
-1. **Check containers**: `docker compose -f docker-compose.production.yml ps`
-2. **Check logs**: `docker compose -f docker-compose.production.yml logs caddy`
-3. **Restart for certificate issues**: `docker compose -f docker-compose.production.yml restart caddy`
-4. **Full restart**: `./deploy.sh`
+1. **HTTPS broken**: Run `./emergency-fix.sh`
+2. **Check containers**: `docker compose -f docker-compose.production.yml ps`
+3. **Check logs**: `docker compose -f docker-compose.production.yml logs caddy`
+4. **Restart for certificate issues**: `docker compose -f docker-compose.production.yml restart caddy`
+5. **Full restart**: `./deploy.sh`
 
 ## Requirements
 
