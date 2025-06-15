@@ -7,6 +7,27 @@ This directory contains the simplified deployment configuration for the Photogra
 ❌ **HTTPS**: Certificate issues detected  
 ✅ **Backend**: API responding normally  
 ✅ **DNS**: Domain resolving correctly  
+⚠️ **GitHub Actions**: Using wrong deployment file (ip.yml instead of production.yml)
+
+## 🚨 Deployment Issue Fixed
+**Problem**: GitHub Actions workflow was trying to use `docker-compose.ip.yml` (IP-based deployment) instead of `docker-compose.production.yml` (domain-based deployment) for the production domain `api.climateriskplan.com`.
+
+**Symptoms**: 
+- Health check timeouts after 20 attempts
+- Containers failing to start properly
+- Missing docker-compose.ip.yml file errors
+
+**Solution**: Use the correct deployment script for production domain.
+
+## Quick Fix (Run on server)
+```bash
+# Use the production fix script
+./fix-production.sh
+
+# Or manually force production deployment
+docker compose -f docker-compose.production.yml down
+docker compose -f docker-compose.production.yml up -d --build
+```
 
 ## Files
 
