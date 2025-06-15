@@ -1,6 +1,3 @@
-# Production Docker Compose for api.climateriskplan.com
-# This replaces all the other docker-compose variants
-
 services:
   app:
     build: ..
@@ -12,11 +9,10 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - ENVIRONMENT=production
-      - LOG_LEVEL=info
     networks:
       - app_network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health/ready"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready')"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -33,9 +29,8 @@ services:
       - ./Caddyfile.production:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
-      - caddy_logs:/var/log/caddy
     environment:
-      - CADDY_LOG_LEVEL=INFO
+      - CADDY_LOG_LEVEL=WARN
     networks:
       - app_network
     depends_on:
@@ -44,18 +39,13 @@ services:
     healthcheck:
       test: ["CMD", "caddy", "version"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
       start_period: 30s
 
 networks:
   app_network:
-    driver: bridge
 
 volumes:
   caddy_data:
-    driver: local
   caddy_config:
-    driver: local
-  caddy_logs:
-    driver: local

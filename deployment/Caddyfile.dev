@@ -1,0 +1,30 @@
+# Development Caddyfile - HTTP only on port 8080
+:80 {
+    reverse_proxy app:8000 {
+        health_uri /health/ready
+        health_interval 30s
+        health_timeout 10s
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto http
+    }
+    
+    header {
+        -Server
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        Referrer-Policy strict-origin-when-cross-origin
+    }
+    
+    encode gzip
+    
+    request_body {
+        max_size 500MB
+    }
+    
+    log {
+        output file /var/log/caddy/dev-access.log
+        format json
+    }
+}

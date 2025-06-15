@@ -76,161 +76,76 @@ jobs:
             docker ps -a --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep -E "(80|caddy|nginx)" || true
           fi
           
-          # Stop existing containers more thoroughly
+          # Stop existing containers
           echo "🛑 Stopping existing containers..."
-          $COMPOSE_CMD -f docker-compose.dev.yml down --remove-orphans 2>/dev/null || true
-          $COMPOSE_CMD -f docker-compose.ip.yml down --remove-orphans 2>/dev/null || true
-          $COMPOSE_CMD -f docker-compose.prod.yml down --remove-orphans 2>/dev/null || true
           $COMPOSE_CMD down --remove-orphans 2>/dev/null || true
-          
-          # Kill any containers that might be using port 80
-          echo "🧹 Cleaning up containers using port 80..."
-          docker ps -q --filter "expose=80" | xargs -r docker stop 2>/dev/null || true
-          docker ps -aq --filter "expose=80" | xargs -r docker rm 2>/dev/null || true
-          
-          # Remove specific containers by name if they exist
-          echo "🧹 Removing existing containers by name..."
           docker stop resilience-api photogrammetry-caddy 2>/dev/null || true
           docker rm resilience-api photogrammetry-caddy 2>/dev/null || true
-          
-          # Additional cleanup for orphaned containers
           docker container prune -f 2>/dev/null || true
           
-          # Clean up old containers and images to save space
-          docker system prune -f 2>/dev/null || true
+          # Clear potentially corrupted volumes
+          docker volume rm $(docker volume ls -q | grep caddy) 2>/dev/null || true
           
-          # Build and start containers
-          echo "🔨 Building and starting containers..."
-          
-          # Check port availability first
-          echo "🔍 Checking port availability..."
-          if netstat -tuln 2>/dev/null | grep -q ':80 ' || ss -tuln 2>/dev/null | grep -q ':80 '; then
-            echo "⚠️ Port 80 is in use. Will try to stop conflicting services."
-            # Try to stop common web servers
-            systemctl stop nginx 2>/dev/null || true
-            systemctl stop apache2 2>/dev/null || true
-            # Kill any processes using port 80
-            fuser -k 80/tcp 2>/dev/null || true
-            sleep 5
-          fi
-          
-          if netstat -tuln 2>/dev/null | grep -q ':443 ' || ss -tuln 2>/dev/null | grep -q ':443 '; then
-            echo "⚠️ Port 443 is in use. Will try to stop conflicting services."
-            fuser -k 443/tcp 2>/dev/null || true
-            sleep 5
-          fi
-          
-          # Use IP configuration for standard HTTPS deployment (ports 80/443)
-          echo "🔄 Starting with production configuration (ports 80/443)..."
-          if $COMPOSE_CMD -f docker-compose.ip.yml up -d --build 2>&1 | tee /tmp/compose_output.log; then
-            echo "✅ Successfully started with production configuration on standard ports"
-            DEPLOYMENT_PORT=80
-            DEPLOYMENT_SCHEME=https
-            COMPOSE_FILE="docker-compose.ip.yml"
+          # Start deployment
+          echo "� Starting production deployment..."
+          if $COMPOSE_CMD up -d --build; then
+            echo "✅ Deployment started successfully"
+            COMPOSE_FILE="docker-compose.yml"
           else
-            echo "❌ Production configuration failed. Error details:"
-            cat /tmp/compose_output.log | tail -20
-            echo "⚠️ Trying dev configuration..."
-            echo "🔄 Starting with dev configuration (port 8080)..."
-            if $COMPOSE_CMD -f docker-compose.dev.yml up -d --build; then
-              echo "✅ Dev configuration started successfully"
-              DEPLOYMENT_PORT=8080
-              DEPLOYMENT_SCHEME=http
-              COMPOSE_FILE="docker-compose.dev.yml"
-            else
-              echo "❌ Both configurations failed!"
-              $COMPOSE_CMD -f docker-compose.dev.yml logs --tail=50 || true
-              exit 1
-            fi
+            echo "❌ Deployment failed!"
+            $COMPOSE_CMD logs --tail=50 || true
+            exit 1
           fi
           
           # Wait for services to start
           echo "⏳ Waiting for services to start..."
-          if [ "$DEPLOYMENT_SCHEME" = "https" ]; then
-            echo "⏳ HTTPS deployment - waiting extra time for TLS initialization..."
-            sleep 30
-          else
-            sleep 15
-          fi
+          sleep 25
           
           # Check container status
           echo "📊 Container status:"
           $COMPOSE_CMD ps
           
-          # Wait for health checks with better error handling
+          # Wait for health checks
           echo "🔍 Waiting for health checks..."
-          for i in {1..20}; do
-            # Check if both containers are healthy
-            APP_STATUS=$($COMPOSE_CMD -f $COMPOSE_FILE ps app --format "{{.Status}}" 2>/dev/null || echo "")
-            CADDY_STATUS=$($COMPOSE_CMD -f $COMPOSE_FILE ps caddy --format "{{.Status}}" 2>/dev/null || echo "")
+          for i in {1..15}; do
+            APP_STATUS=$($COMPOSE_CMD ps app --format "{{.Status}}" 2>/dev/null || echo "")
+            CADDY_STATUS=$($COMPOSE_CMD ps caddy --format "{{.Status}}" 2>/dev/null || echo "")
             
             if echo "$APP_STATUS" | grep -q "healthy" && echo "$CADDY_STATUS" | grep -q "healthy"; then
               echo "✅ Both services are healthy"
               break
             fi
             
-            if [ $i -eq 20 ]; then
-              echo "❌ Health check timeout after 20 attempts"
+            if [ $i -eq 15 ]; then
+              echo "⚠️ Health checks taking longer than expected"
               echo "📊 Current status:"
               echo "   App: $APP_STATUS"
               echo "   Caddy: $CADDY_STATUS"
               echo "📋 Container logs:"
-              $COMPOSE_CMD -f $COMPOSE_FILE logs --tail=50 app || true
-              $COMPOSE_CMD -f $COMPOSE_FILE logs --tail=50 caddy || true
-              exit 1
+              $COMPOSE_CMD logs --tail=30 app || true
+              $COMPOSE_CMD logs --tail=30 caddy || true
+              break
             fi
-            echo "   Attempt $i/20 - app: $APP_STATUS, caddy: $CADDY_STATUS"
+            echo "   Attempt $i/15 - app: $(echo $APP_STATUS | cut -d' ' -f1), caddy: $(echo $CADDY_STATUS | cut -d' ' -f1)"
             sleep 6
           done
           
           # Test the deployment
           echo "🔍 Testing deployment..."
-          DEPLOYMENT_PORT=${DEPLOYMENT_PORT:-80}
-          DEPLOYMENT_SCHEME=${DEPLOYMENT_SCHEME:-https}
+          sleep 10
           
-          # Test the appropriate endpoint
-          if [ "$DEPLOYMENT_SCHEME" = "https" ]; then
-            # For HTTPS, test both HTTP redirect and HTTPS endpoint
-            echo "Testing HTTPS endpoint..."
-            # Wait a bit more for TLS to be ready
-            sleep 10
-            if curl -L -f -k --max-time 30 https://localhost/health >/dev/null 2>&1; then
-              echo "✅ HTTPS deployment successful!"
-              echo "🌐 API available at: https://$(curl -s ifconfig.me 2>/dev/null || echo 'your-server-ip')"
-            elif curl -f --max-time 30 http://localhost/health >/dev/null 2>&1; then
-              echo "⚠️ HTTP deployment working (HTTPS may need time to initialize)"
-              echo "🌐 API available at: http://$(curl -s ifconfig.me 2>/dev/null || echo 'your-server-ip')"
-            else
-              echo "❌ Both HTTP and HTTPS tests failed, trying fallback endpoints..."
-              # Try different health endpoints
-              for endpoint in "/health/ready" "/ready" "/"; do
-                echo "   Testing endpoint: $endpoint"
-                if curl -f --max-time 15 "http://localhost$endpoint" >/dev/null 2>&1; then
-                  echo "✅ HTTP deployment working on endpoint: $endpoint"
-                  echo "🌐 API available at: http://$(curl -s ifconfig.me 2>/dev/null || echo 'your-server-ip')"
-                  break
-                fi
-              done
-            fi
+          if curl -f -s https://api.climateriskplan.com/health/ready >/dev/null 2>&1; then
+            echo "✅ HTTPS deployment successful!"
+            echo "🌐 API available at: https://api.climateriskplan.com"
+          elif curl -f -s http://api.climateriskplan.com/health/ready >/dev/null 2>&1; then
+            echo "⚠️ HTTP working, HTTPS may need more time for certificates"
+            echo "🌐 API available at: http://api.climateriskplan.com"
+            echo "💡 Check https://api.climateriskplan.com in a few minutes"
           else
-            # For HTTP dev deployment
-            echo "Testing HTTP endpoint on port ${DEPLOYMENT_PORT}..."
-            if curl -f --max-time 30 http://localhost:${DEPLOYMENT_PORT}/health >/dev/null 2>&1; then
-              echo "✅ HTTP deployment successful!"
-              echo "🌐 API available at: http://$(curl -s ifconfig.me 2>/dev/null || echo 'your-server-ip'):${DEPLOYMENT_PORT}"
-            else
-              echo "❌ HTTP deployment failed, trying fallback endpoints..."
-              # Try different health endpoints
-              for endpoint in "/health/ready" "/ready" "/"; do
-                echo "   Testing endpoint: $endpoint"
-                if curl -f --max-time 15 "http://localhost:${DEPLOYMENT_PORT}$endpoint" >/dev/null 2>&1; then
-                  echo "✅ HTTP deployment working on endpoint: $endpoint"
-                  echo "🌐 API available at: http://$(curl -s ifconfig.me 2>/dev/null || echo 'your-server-ip'):${DEPLOYMENT_PORT}"
-                  break
-                fi
-              done
-            fi
+            echo "❌ Deployment test failed"
+            echo "📋 Checking logs..."
+            $COMPOSE_CMD logs --tail=30 caddy
           fi
           
           echo "📊 Final status:"
-          $COMPOSE_CMD -f $COMPOSE_FILE ps
+          $COMPOSE_CMD ps
