@@ -1,9 +1,8 @@
-\
-# filepath: /workspaces/photogrammetry/services/visualization/invert_image.py
-\"\"\"Invert the colors of an image.\"\"\"
+"""Invert the colors of an image."""
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -12,7 +11,7 @@ import numpy as np
 
 
 def invert_image_colors(image_path: str, output_dir: Optional[str] = None) -> str:
-    \"\"\"
+    """
     Invert the colors of an image, preserving the alpha channel.
 
     Args:
@@ -23,9 +22,9 @@ def invert_image_colors(image_path: str, output_dir: Optional[str] = None) -> st
 
     Returns:
         str: Path to the generated inverted PNG file.
-    \"\"\"
+    """
     src_path = Path(image_path)
-    
+
     if output_dir is None:
         output_dir_path = src_path.parent
     else:
@@ -36,18 +35,18 @@ def invert_image_colors(image_path: str, output_dir: Optional[str] = None) -> st
 
     try:
         img = Image.open(src_path)
-        
+
         if img.mode == 'RGBA':
             # Separate RGB and Alpha channels
             rgb = img.convert('RGB')
             alpha = img.split()[-1]
-            
+
             # Invert RGB channels
             inverted_rgb = ImageOps.invert(rgb)
-            
+
             # Merge inverted RGB with original Alpha
             inverted_img = Image.merge('RGBA', (*inverted_rgb.split(), alpha))
-            
+
         elif img.mode == 'RGB':
             inverted_img = ImageOps.invert(img)
         else:
@@ -62,12 +61,14 @@ def invert_image_colors(image_path: str, output_dir: Optional[str] = None) -> st
 
         # Save the inverted image
         inverted_img.save(out_path, optimize=False, compress_level=0)
-        
+
         logging.info(f"Generated inverted image: {out_path}")
         logging.info(f"Original image mode: {img.mode}")
         logging.info(f"Inverted image mode: {inverted_img.mode}")
-        logging.info(f"Inverted image resolution: {inverted_img.size[0]}x{inverted_img.size[1]} pixels")
-        logging.info(f"Inverted image file size: {Path(out_path).stat().st_size} bytes")
+        logging.info(
+            f"Inverted image resolution: {inverted_img.size[0]}x{inverted_img.size[1]} pixels")
+        logging.info(
+            f"Inverted image file size: {Path(out_path).stat().st_size} bytes")
 
         return str(out_path)
 
@@ -78,6 +79,7 @@ def invert_image_colors(image_path: str, output_dir: Optional[str] = None) -> st
         logging.error(f"An error occurred during image inversion: {e}")
         raise
 
+
 if __name__ == '__main__':
     # Example usage (for testing purposes)
     # Create a dummy RGBA image for testing
@@ -86,8 +88,9 @@ if __name__ == '__main__':
     dummy_array[25:75, 25:75, 1] = 128  # Green channel
     dummy_array[25:75, 25:75, 2] = 0    # Blue channel
     dummy_array[25:75, 25:75, 3] = 150  # Alpha channel (semi-transparent)
-    dummy_array[0:25, 0:25, :] = [50,100,150,255] # another color with full alpha
-    
+    # another color with full alpha
+    dummy_array[0:25, 0:25, :] = [50, 100, 150, 255]
+
     img = Image.fromarray(dummy_array, 'RGBA')
     test_image_path = Path("./test_image_rgba.png")
     img.save(test_image_path)
@@ -97,7 +100,8 @@ if __name__ == '__main__':
     # Test RGBA inversion
     try:
         inverted_path_rgba = invert_image_colors(str(test_image_path))
-        print(f"RGBA Inversion test successful. Inverted image: {inverted_path_rgba}")
+        print(
+            f"RGBA Inversion test successful. Inverted image: {inverted_path_rgba}")
         # Clean up dummy inverted image
         # Path(inverted_path_rgba).unlink(missing_ok=True)
     except Exception as e:
@@ -113,12 +117,13 @@ if __name__ == '__main__':
     # Test RGB inversion
     try:
         inverted_path_rgb = invert_image_colors(str(test_image_rgb_path))
-        print(f"RGB Inversion test successful. Inverted image: {inverted_path_rgb}")
+        print(
+            f"RGB Inversion test successful. Inverted image: {inverted_path_rgb}")
         # Clean up dummy inverted image
         # Path(inverted_path_rgb).unlink(missing_ok=True)
     except Exception as e:
         print(f"RGB Inversion test failed: {e}")
-    
+
     # Clean up dummy images
     # test_image_path.unlink(missing_ok=True)
     # test_image_rgb_path.unlink(missing_ok=True)
