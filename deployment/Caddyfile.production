@@ -1,0 +1,57 @@
+# Production Caddyfile for api.climateriskplan.com
+# This replaces all the other Caddyfile variants
+
+api.climateriskplan.com {
+    # Caddy automatically obtains Let's Encrypt certificates for domains
+    
+    # Reverse proxy to FastAPI application
+    reverse_proxy app:8000 {
+        # Health check configuration
+        health_uri /health/ready
+        health_interval 30s
+        health_timeout 10s
+        
+        # Request headers for proper forwarding
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto https
+    }
+    
+    # Security headers
+    header {
+        # Remove server identification
+        -Server
+        
+        # Security headers
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        X-XSS-Protection "1; mode=block"
+        Referrer-Policy strict-origin-when-cross-origin
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    }
+    
+    # Enable compression
+    encode gzip
+    
+    # Request logging
+    log {
+        output file /var/log/caddy/access.log
+        format json
+    }
+    
+    # Handle large file uploads (for point cloud data)
+    request_body {
+        max_size 500MB
+    }
+}
+
+# Redirect www to non-www (optional)
+www.api.climateriskplan.com {
+    redir https://api.climateriskplan.com{uri} permanent
+}
+
+# Health check endpoint for load balancers
+:2019 {
+    respond /health "OK" 200
+}

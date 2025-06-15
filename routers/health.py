@@ -37,15 +37,16 @@ async def health_check():
     # Get process info safely
     try:
         import psutil
-        health_data["uptime"] = time.time() - psutil.Process(os.getpid()).create_time()
+        process = psutil.Process(os.getpid())
+        health_data["uptime"] = time.time() - process.create_time()
     except Exception:
         health_data["uptime"] = "unknown"
     
     # Optional: Test critical imports only if needed
     try:
         # Light weight test - just check if modules exist without instantiating
-        import services.core.process_point_cloud
-        import services.core.geocode
+        import services.core.process_point_cloud  # noqa: F401
+        import services.core.geocode  # noqa: F401
         health_data["dependencies"] = "ok"
     except ImportError as e:
         health_data["dependencies"] = f"warning: {str(e)}"
@@ -87,17 +88,17 @@ async def deep_health_check():
         }
 
 
-@router.get("/ready")
-async def readiness_check():
-    """Readiness check endpoint that ensures all services are fully loaded."""
+@router.get("/startup")
+async def startup_check():
+    """Startup check endpoint that ensures all services are fully loaded."""
     try:
         # Test full initialization of critical services
         from services.core.process_point_cloud import PointCloudProcessor
         from services.core.geocode import Geocoder
         
         # Try to instantiate key objects to verify they're working
-        processor = PointCloudProcessor()
-        geocoder = Geocoder()
+        _ = PointCloudProcessor()  # Check if instantiation works
+        _ = Geocoder()  # Check if instantiation works
         
         return {
             "status": "ready",
@@ -108,7 +109,7 @@ async def readiness_check():
         }
     except Exception as e:
         return {
-            "status": "not_ready", 
+            "status": "not_ready",
             "service": "photogrammetry-api",
             "version": "1.0.0",
             "all_services_loaded": False,
