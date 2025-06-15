@@ -1,0 +1,39 @@
+# Caddyfile for api.climateriskplan.com with automatic Let's Encrypt HTTPS
+
+api.climateriskplan.com {
+    # Caddy will automatically obtain Let's Encrypt certificate for this domain
+    reverse_proxy app:8000 {
+        health_uri /health/ready
+        health_interval 30s
+        health_timeout 10s
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto https
+    }
+    
+    # Security headers
+    header {
+        -Server
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        Referrer-Policy strict-origin-when-cross-origin
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    }
+    
+    encode gzip
+    
+    request_body {
+        max_size 500MB
+    }
+    
+    log {
+        output file /var/log/caddy/access.log
+        format json
+    }
+}
+
+# Redirect www to non-www (optional)
+www.api.climateriskplan.com {
+    redir https://api.climateriskplan.com{uri} permanent
+}
