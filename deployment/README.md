@@ -1,67 +1,59 @@
-# Deployment Guide
+# Production Deployment
 
-This directory contains the simplified deployment configuration for the Photogrammetry API.
+Clean deployment configuration for the Photogrammetry API at `api.climateriskplan.com`.
 
-## Current Status (June 15, 2025)
-✅ **HTTP API**: Working at http://api.climateriskplan.com  
-❌ **HTTPS**: Certificate issues detected  
-✅ **Backend**: API responding normally  
-✅ **DNS**: Domain resolving correctly  
-⚠️ **GitHub Actions**: Using wrong deployment file (ip.yml instead of production.yml)
-
-## 🚨 Deployment Issue Fixed
-**Problem**: GitHub Actions workflow was trying to use `docker-compose.ip.yml` (IP-based deployment) instead of `docker-compose.production.yml` (domain-based deployment) for the production domain `api.climateriskplan.com`.
-
-**Symptoms**: 
-- Health check timeouts after 20 attempts
-- Containers failing to start properly
-- Missing docker-compose.ip.yml file errors
-
-**Solution**: Use the correct deployment script for production domain.
-
-## Quick Fix (Run on server)
-```bash
-# Use the production fix script
-./fix-production.sh
-
-# Or manually force production deployment
-docker compose -f docker-compose.production.yml down
-docker compose -f docker-compose.production.yml up -d --build
-```
+## Status
+✅ **Production**: Working at https://api.climateriskplan.com  
+✅ **HTTP**: Working at http://api.climateriskplan.com  
+✅ **SSL**: Let's Encrypt certificates active  
+✅ **Health**: API responding normally  
 
 ## Files
 
-- `Caddyfile.production` - Production Caddy configuration for api.climateriskplan.com
-- `docker-compose.production.yml` - Production Docker Compose configuration  
+- `docker-compose.production.yml` - Production deployment configuration
+- `Caddyfile.production` - Caddy reverse proxy with automatic HTTPS
 - `deploy.sh` - Main deployment script
-- `diagnose.sh` - HTTPS troubleshooting script
+- `diagnose.sh` - Diagnostic and troubleshooting tool
 
-## Quick Start
+## Usage
 
-1. **Deploy to production:**
-   ```bash
-   ./deploy.sh
-   ```
+### Deploy
+```bash
+./deploy.sh
+```
 
-2. **Diagnose HTTPS issues:**
-   ```bash
-   ./diagnose.sh
-   ```
+### Check Status
+```bash
+./diagnose.sh
+```
 
-3. **Fix HTTPS certificate:**
-   ```bash
-   # Restart Caddy to regenerate certificates
-   docker compose -f docker-compose.production.yml restart caddy
-   
-   # Or full restart if needed
-   docker compose -f docker-compose.production.yml down
-   docker compose -f docker-compose.production.yml up -d
-   ```
+### View Logs
+```bash
+docker compose -f docker-compose.production.yml logs -f
+```
 
-4. **View logs:**
-   ```bash
-   docker compose -f docker-compose.production.yml logs -f caddy
-   ```
+### Restart Services
+```bash
+docker compose -f docker-compose.production.yml restart
+```
+
+### Stop Deployment
+```bash
+docker compose -f docker-compose.production.yml down
+```
+
+## Requirements
+
+- Domain `api.climateriskplan.com` pointing to server IP
+- Ports 80 and 443 open
+- Docker and Docker Compose installed
+
+## Troubleshooting
+
+1. **Check containers**: `docker compose -f docker-compose.production.yml ps`
+2. **Check logs**: `docker compose -f docker-compose.production.yml logs caddy`
+3. **Restart for certificate issues**: `docker compose -f docker-compose.production.yml restart caddy`
+4. **Full restart**: `./deploy.sh`
 
 ## Requirements
 
