@@ -24,7 +24,7 @@ async def health_check():
     """Health check endpoint with minimal dependency verification."""
     import time
     import os
-    
+
     # Basic health check without heavy imports
     health_data = {
         "status": "healthy",
@@ -33,7 +33,7 @@ async def health_check():
         "active_jobs": len(jobs),
         "timestamp": time.time(),
     }
-    
+
     # Get process info safely
     try:
         import psutil
@@ -41,7 +41,7 @@ async def health_check():
         health_data["uptime"] = time.time() - process.create_time()
     except Exception:
         health_data["uptime"] = "unknown"
-    
+
     # Optional: Test critical imports only if needed
     try:
         # Light weight test - just check if modules exist without instantiating
@@ -54,7 +54,7 @@ async def health_check():
     except Exception as e:
         health_data["dependencies"] = f"loading: {str(e)}"
         # Still return healthy status during startup
-    
+
     return health_data
 
 
@@ -95,11 +95,11 @@ async def startup_check():
         # Test full initialization of critical services
         from services.core.process_point_cloud import PointCloudProcessor
         from services.core.geocode import Geocoder
-        
+
         # Try to instantiate key objects to verify they're working
         _ = PointCloudProcessor()  # Check if instantiation works
         _ = Geocoder()  # Check if instantiation works
-        
+
         return {
             "status": "ready",
             "service": "photogrammetry-api",
